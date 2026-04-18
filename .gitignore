@@ -44,6 +44,9 @@
 build/
 build-*/
 
+# macOS Finder metadata
+.DS_Store
+
 # In-source CMake artifacts (if CMake is run without -B)
 CMakeCache.txt
 CMakeFiles/

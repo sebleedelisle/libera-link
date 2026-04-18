@@ -13,6 +13,8 @@ option(IDN_BRIDGE_BUILD_GUI "Build the native GUI target when ImGui/GLFW sources
 
 set(IDN_BRIDGE_GUI_GLFW_SOURCE_DIR "" CACHE PATH "Path to a GLFW source tree for the GUI target")
 set(IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR "" CACHE PATH "Path to an ImGui source tree for the GUI target")
+set(IDN_BRIDGE_GUI_GLFW_GIT_TAG "3.4" CACHE STRING "Pinned GLFW tag used when fetching GUI dependencies")
+set(IDN_BRIDGE_GUI_IMGUI_GIT_TAG "v1.92.7-docking" CACHE STRING "Pinned Dear ImGui tag used when fetching GUI dependencies")
 
 set(LIBERA_USE_BUNDLED_LIBUSB ${IDN_BRIDGE_USE_BUNDLED_LIBUSB} CACHE BOOL "" FORCE)
 set(LIBERA_BUNDLED_LIBUSB_DIR
@@ -53,20 +55,6 @@ if(NOT IDN_BRIDGE_OPENIDN_BRIDGE_MODE)
       "IDN_BRIDGE_OPENIDN_BRIDGE_MODE=OFF is no longer supported by the vendored "
       "third_party/openidn subset."
   )
-endif()
-
-if(NOT IDN_BRIDGE_GUI_GLFW_SOURCE_DIR)
-  set(_fallback_glfw "${CMAKE_CURRENT_SOURCE_DIR}/../libera-lab/build/_deps/glfw-src")
-  if(EXISTS "${_fallback_glfw}/CMakeLists.txt")
-    set(IDN_BRIDGE_GUI_GLFW_SOURCE_DIR "${_fallback_glfw}")
-  endif()
-endif()
-
-if(NOT IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR)
-  set(_fallback_imgui "${CMAKE_CURRENT_SOURCE_DIR}/../libera-lab/build/_deps/imgui-src")
-  if(EXISTS "${_fallback_imgui}/imgui.cpp")
-    set(IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR "${_fallback_imgui}")
-  endif()
 endif()
 
 add_library(openidn-core STATIC ${OPENIDN_SOURCES})
@@ -111,14 +99,56 @@ else()
 endif()
 
 if(IDN_BRIDGE_BUILD_GUI)
-  set(_gui_deps_ready TRUE)
+  include(FetchContent)
 
-  if(NOT EXISTS "${IDN_BRIDGE_GUI_GLFW_SOURCE_DIR}/CMakeLists.txt")
+  set(_gui_deps_ready TRUE)
+  set(_idn_bridge_gui_glfw_source_dir "${IDN_BRIDGE_GUI_GLFW_SOURCE_DIR}")
+  set(_idn_bridge_gui_imgui_source_dir "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}")
+
+  if(NOT EXISTS "${_idn_bridge_gui_glfw_source_dir}/CMakeLists.txt")
+    if(IDN_BRIDGE_GUI_GLFW_SOURCE_DIR)
+      message(WARNING
+          "Configured IDN_BRIDGE_GUI_GLFW_SOURCE_DIR='${IDN_BRIDGE_GUI_GLFW_SOURCE_DIR}' is invalid; "
+          "fetching GLFW ${IDN_BRIDGE_GUI_GLFW_GIT_TAG} instead."
+      )
+    else()
+      message(STATUS "Fetching GLFW ${IDN_BRIDGE_GUI_GLFW_GIT_TAG} for idn_bridge_gui")
+    endif()
+    FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG        ${IDN_BRIDGE_GUI_GLFW_GIT_TAG}
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(glfw)
+    set(_idn_bridge_gui_glfw_source_dir "${glfw_SOURCE_DIR}")
+  endif()
+
+  if(NOT EXISTS "${_idn_bridge_gui_imgui_source_dir}/imgui.cpp")
+    if(IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR)
+      message(WARNING
+          "Configured IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR='${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}' is invalid; "
+          "fetching Dear ImGui ${IDN_BRIDGE_GUI_IMGUI_GIT_TAG} instead."
+      )
+    else()
+      message(STATUS "Fetching Dear ImGui ${IDN_BRIDGE_GUI_IMGUI_GIT_TAG} for idn_bridge_gui")
+    endif()
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        ${IDN_BRIDGE_GUI_IMGUI_GIT_TAG}
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(imgui)
+    set(_idn_bridge_gui_imgui_source_dir "${imgui_SOURCE_DIR}")
+  endif()
+
+  if(NOT EXISTS "${_idn_bridge_gui_glfw_source_dir}/CMakeLists.txt")
     message(WARNING "GLFW source tree not found; idn_bridge_gui target will be skipped.")
     set(_gui_deps_ready FALSE)
   endif()
 
-  if(NOT EXISTS "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/imgui.cpp")
+  if(NOT EXISTS "${_idn_bridge_gui_imgui_source_dir}/imgui.cpp")
     message(WARNING "ImGui source tree not found; idn_bridge_gui target will be skipped.")
     set(_gui_deps_ready FALSE)
   endif()
@@ -128,20 +158,22 @@ if(IDN_BRIDGE_BUILD_GUI)
     set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
-    add_subdirectory("${IDN_BRIDGE_GUI_GLFW_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/gui-deps/glfw")
+    if(NOT TARGET glfw)
+      add_subdirectory("${_idn_bridge_gui_glfw_source_dir}" "${CMAKE_CURRENT_BINARY_DIR}/gui-deps/glfw")
+    endif()
 
     add_library(idn_bridge_imgui STATIC
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/imgui.cpp"
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/imgui_draw.cpp"
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/imgui_tables.cpp"
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/imgui_widgets.cpp"
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/imgui_demo.cpp"
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp"
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp"
+        "${_idn_bridge_gui_imgui_source_dir}/imgui.cpp"
+        "${_idn_bridge_gui_imgui_source_dir}/imgui_draw.cpp"
+        "${_idn_bridge_gui_imgui_source_dir}/imgui_tables.cpp"
+        "${_idn_bridge_gui_imgui_source_dir}/imgui_widgets.cpp"
+        "${_idn_bridge_gui_imgui_source_dir}/imgui_demo.cpp"
+        "${_idn_bridge_gui_imgui_source_dir}/backends/imgui_impl_glfw.cpp"
+        "${_idn_bridge_gui_imgui_source_dir}/backends/imgui_impl_opengl3.cpp"
     )
     target_include_directories(idn_bridge_imgui PUBLIC
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}"
-        "${IDN_BRIDGE_GUI_IMGUI_SOURCE_DIR}/backends"
+        "${_idn_bridge_gui_imgui_source_dir}"
+        "${_idn_bridge_gui_imgui_source_dir}/backends"
     )
     target_link_libraries(idn_bridge_imgui PUBLIC glfw)
 

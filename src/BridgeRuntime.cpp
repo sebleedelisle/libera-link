@@ -113,9 +113,9 @@ std::string describeController(const libera::core::ControllerInfo& info) {
 void printUsageImpl(const char* exe, std::ostream& out) {
     out << "Usage: " << exe << " [options]\n"
         << "  --discovery-timeout-ms <ms>    Libera discovery wait time (default 5000)\n"
-        << "  --max-dacs <count>             Limit number of bridged DACs (default all)\n"
+        << "  --max-dacs <count>             Limit number of bridged controllers (default all)\n"
         << "  --slice-us <us>                Driver slice duration in microseconds (default 15000)\n"
-        << "  --max-queue-points <count>     Max queued translated points per DAC (default 300000)\n"
+        << "  --max-queue-points <count>     Max queued translated points per controller (default 300000)\n"
         << "  --latency-ms <ms>              Target buffered latency in milliseconds (default 50)\n"
         << "  --max-latency-ms <ms>          Max auto latency in milliseconds (default 1500)\n"
         << "  --no-auto-latency              Disable automatic latency increase on underrun\n"
@@ -217,6 +217,8 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(queueMutex_);
+            hasSeenInput_ = true;
+            lastInputAt_ = std::chrono::steady_clock::now();
             const std::size_t projected = pendingPoints_.size() + translated.size();
             if (projected > maxQueuedPoints_) {
                 const std::size_t overflow = projected - maxQueuedPoints_;
@@ -291,6 +293,11 @@ public:
             snapshot.queuedPoints = pendingPoints_.size();
         }
         return snapshot;
+    }
+
+    bool isAwaitingInput(std::chrono::milliseconds idleThreshold = 2000ms) const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return isAwaitingInputLocked(std::chrono::steady_clock::now(), idleThreshold);
     }
 
 private:
@@ -472,6 +479,10 @@ private:
                           std::size_t missing,
                           std::size_t targetPoints,
                           bool bufferingHold) {
+        if (isAwaitingInputLocked(std::chrono::steady_clock::now(), 2000ms)) {
+            return;
+        }
+
         const auto now = std::chrono::steady_clock::now();
         if ((now - lastUnderrunLog_) < 1000ms) {
             return;
@@ -492,6 +503,17 @@ private:
             << " queue_now=" << pendingPoints_.size()
             << " buffering=" << (bufferingHold ? 1 : 0);
         logger_->info(oss.str());
+    }
+
+    bool isAwaitingInputLocked(std::chrono::steady_clock::time_point now,
+                               std::chrono::milliseconds idleThreshold) const {
+        if (!hasSeenInput_) {
+            return true;
+        }
+        if (!pendingPoints_.empty()) {
+            return false;
+        }
+        return (now - lastInputAt_) >= idleThreshold;
     }
 
     void maybeUpdatePointRate(unsigned commandedPointRate) {
@@ -524,6 +546,8 @@ private:
     std::deque<LaserPoint> pendingPoints_;
     LaserPoint lastOutputPoint_{};
     bool haveLastOutputPoint_ = false;
+    bool hasSeenInput_ = false;
+    std::chrono::steady_clock::time_point lastInputAt_{};
     std::atomic<bool> buffering_{true};
     std::chrono::steady_clock::time_point lastUnderrunLog_{};
     std::atomic<std::uint64_t> receivedSlices_{0};
@@ -644,6 +668,7 @@ public:
         lastStatsLog_ = now;
 
         const auto stats = adapter_->getStatsSnapshot();
+        const bool awaitingInput = adapter_->isAwaitingInput();
         const auto deltaRxPts = stats.receivedPoints - lastStats_.receivedPoints;
         const auto deltaRxLitPts = stats.receivedLitPoints - lastStats_.receivedLitPoints;
         const auto deltaRxSlices = stats.receivedSlices - lastStats_.receivedSlices;
@@ -653,6 +678,11 @@ public:
         const auto deltaOutPts = stats.emittedPoints - lastStats_.emittedPoints;
         const auto deltaBlank = stats.blankFillPoints - lastStats_.blankFillPoints;
         const auto deltaDropped = stats.droppedPoints - lastStats_.droppedPoints;
+
+        if (awaitingInput && deltaRxSlices == 0 && deltaRxPts == 0 && deltaRxLitPts == 0) {
+            lastStats_ = stats;
+            return;
+        }
 
         std::ostringstream oss;
         oss << "[bridge:" << label_ << "]"
@@ -948,7 +978,7 @@ bool BridgeRuntime::scan(const BridgeOptions& options) {
             return false;
         }
         impl_->state = RuntimeState::Scanning;
-        impl_->statusMessage = "Scanning for DACs...";
+        impl_->statusMessage = "Scanning for controllers...";
         impl_->hasDiscoveryResults = false;
         impl_->discoveredControllers = 0;
         impl_->discovered.clear();
@@ -956,7 +986,7 @@ bool BridgeRuntime::scan(const BridgeOptions& options) {
 
     impl_->logger->clear();
     impl_->stopRequested.store(false, std::memory_order_relaxed);
-    impl_->logger->info("Scanning for DACs via Libera");
+    impl_->logger->info("Scanning for controllers via Libera");
 
     if (!impl_->liberaSystem) {
         impl_->liberaSystem = std::make_unique<libera::System>();
@@ -967,7 +997,7 @@ bool BridgeRuntime::scan(const BridgeOptions& options) {
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
         impl_->setState(RuntimeState::Stopped, "Stopped");
-        impl_->logger->info("DAC scan cancelled.");
+        impl_->logger->info("Controller scan cancelled.");
         return false;
     }
 
@@ -977,7 +1007,7 @@ bool BridgeRuntime::scan(const BridgeOptions& options) {
         impl_->discoveredControllers = discoveredSnapshots.size();
         impl_->discovered = std::move(discoveredSnapshots);
         impl_->state = RuntimeState::Stopped;
-        impl_->statusMessage = discovered.empty() ? "No DACs found" : "Scan complete";
+        impl_->statusMessage = discovered.empty() ? "No controllers found" : "Scan complete";
     }
 
     if (discovered.empty()) {
@@ -1110,7 +1140,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         const auto serviceIdRaw = startedEndpoints + 1;
         if (serviceIdRaw > 255) {
             std::ostringstream oss;
-            oss << "Service ID range exceeded. Stopping at " << startedEndpoints << " DAC(s).";
+            oss << "Service ID range exceeded. Stopping at " << startedEndpoints << " controller(s).";
             impl_->logger->error(oss.str());
             break;
         }
@@ -1154,7 +1184,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
     if (endpoints.empty()) {
         const std::string error = selectedControllerIds.empty()
                                       ? "No bridge endpoints started."
-                                      : "No selected DACs were started.";
+                                      : "No selected controllers were started.";
         stopStartedEndpoints(endpoints);
         impl_->setState(RuntimeState::Failed, error);
         impl_->logger->error(error);

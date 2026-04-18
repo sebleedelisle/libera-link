@@ -7,10 +7,12 @@
 #include "fonts/IconsForkAwesome.h"
 #include "imgui.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <chrono>
 #include <future>
 #include <set>
+#include <unordered_map>
 #include <utility>
 #include <string>
 
@@ -34,14 +36,27 @@ ImVec4 statusColor(idn_bridge::RuntimeState state) {
     }
 }
 
+void drawSectionTitle(const LiberaApp& app, const char* title, const char* subtitle = nullptr) {
+    if (app.fontMedium) {
+        ImGui::PushFont(app.fontMedium);
+    }
+    ImGui::TextUnformatted(title);
+    if (app.fontMedium) {
+        ImGui::PopFont();
+    }
+    if (subtitle && *subtitle) {
+        ImGui::TextDisabled("%s", subtitle);
+    }
+}
+
 float drawBrandLogo(const LiberaApp& app, ImVec2 pos, float areaWidth, bool rightAlign = false) {
-    ImGuiIO& io = ImGui::GetIO();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImFont* boldFont = app.fontLarge ? app.fontLarge : ImGui::GetFont();
     ImFont* defaultFont = app.fontBase ? app.fontBase : ImGui::GetFont();
+    const float fontScale = ImGui::GetStyle().FontScaleMain;
 
-    const float logoFontSize = boldFont->FontSize * io.FontGlobalScale;
-    const float baseSubFontSize = defaultFont->FontSize * io.FontGlobalScale * 0.85f;
+    const float logoFontSize = boldFont->LegacySize * fontScale;
+    const float baseSubFontSize = defaultFont->LegacySize * fontScale * 0.85f;
     const char* firstWord = "LIBERA";
     const char* secondWord = "PORT";
     const char* subtitle = "UNIVERSAL TRANSLATOR FOR LASERS";
@@ -86,7 +101,7 @@ int main() {
     bool rescanInFlight = false;
     bool stopInFlight = false;
     bool bridgeSyncPending = false;
-    bool showLogsPopup = false;
+    bool showLogsWindow = false;
     bool showPluginsWindow = false;
     std::set<std::string> enabledControllers; // IDs of controllers selected for bridging
 
@@ -109,6 +124,14 @@ int main() {
         });
         stopInFlight = true;
     };
+
+    {
+        const idn_bridge::BridgeOptions options;
+        scanFuture = std::async(std::launch::async, [&runtime, options] {
+            return runtime.scan(options);
+        });
+        scanInFlight = true;
+    }
 
     while (app.beginFrame()) {
         if (scanFuture.valid() && scanFuture.wait_for(0ms) == std::future_status::ready) {
@@ -145,8 +168,11 @@ int main() {
         }
 
         std::set<std::string> activeControllerIds;
+        std::unordered_map<std::string, const idn_bridge::EndpointSnapshot*> endpointByControllerId;
+        endpointByControllerId.reserve(snapshot.endpoints.size());
         for (const auto& endpoint : snapshot.endpoints) {
             activeControllerIds.insert(endpoint.id);
+            endpointByControllerId.emplace(endpoint.id, &endpoint);
         }
 
         auto selectedBridgeableIds = [&]() {
@@ -159,6 +185,27 @@ int main() {
             return selectedIds;
         };
 
+        auto selectedBridgeableCount = [&]() -> std::size_t {
+            std::size_t count = 0;
+            for (const auto& controller : snapshot.discovered) {
+                if (controller.bridgeable && enabledControllers.count(controller.id) > 0) {
+                    ++count;
+                }
+            }
+            return count;
+        };
+
+        auto bridgeableCount = [&]() -> std::size_t {
+            return static_cast<std::size_t>(std::count_if(
+                snapshot.discovered.begin(), snapshot.discovered.end(),
+                [](const idn_bridge::DiscoveredControllerSnapshot& controller) {
+                    return controller.bridgeable;
+                }));
+        };
+
+        const auto runtimeLabel = idn_bridge::runtimeStateLabel(snapshot.state);
+        const ImVec4 runtimeColor = statusColor(snapshot.state);
+
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->WorkPos);
         ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -166,7 +213,8 @@ int main() {
                      ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoCollapse |
-                     ImGuiWindowFlags_NoTitleBar);
+                     ImGuiWindowFlags_NoTitleBar |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
 
         const float logoHeight = drawBrandLogo(app,
                                                ImGui::GetCursorScreenPos(),
@@ -176,14 +224,13 @@ int main() {
             ImGui::Dummy(ImVec2(0.0f, logoHeight + 12.0f));
         }
 
-        ImGui::BeginGroup();
-        ImGui::Text("Bridge Status");
-        ImGui::SameLine();
-        ImGui::TextColored(statusColor(snapshot.state), "%s", idn_bridge::runtimeStateLabel(snapshot.state));
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", snapshot.statusMessage.c_str());
-
-        ImGui::Spacing();
+        const bool showTopError = !snapshot.lastError.empty() &&
+                                  snapshot.state == idn_bridge::RuntimeState::Failed;
+        const float overviewHeight =
+            (ImGui::GetFrameHeightWithSpacing() * 1.35f) +
+            (ImGui::GetTextLineHeightWithSpacing() * (showTopError ? 3.1f : 2.35f)) +
+            12.0f;
+        ImGui::BeginChild("BridgeOverview", ImVec2(0.0f, overviewHeight), true, ImGuiWindowFlags_NoScrollbar);
 
         if (scanInFlight) {
             ImGui::BeginDisabled();
@@ -196,7 +243,7 @@ int main() {
         } else {
             const bool bridgeRunning = snapshot.state == idn_bridge::RuntimeState::Running ||
                                        snapshot.state == idn_bridge::RuntimeState::StopRequested;
-            const char* scanButtonLabel = bridgeRunning ? "Rescan" : "Scan";
+            const char* scanButtonLabel = "RESCAN";
             const bool scanActionDisabled = startInFlight || stopInFlight;
             if (scanActionDisabled) {
                 ImGui::BeginDisabled();
@@ -219,48 +266,80 @@ int main() {
         }
 
         ImGui::SameLine();
+        if (ImGui::Button("Logs", ImVec2(100.0f, 0.0f))) {
+            showLogsWindow = true;
+        }
+
+        ImGui::SameLine();
         if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
             showPluginsWindow = true;
         }
 
+        ImGui::Spacing();
+        ImGui::TextColored(runtimeColor, "%s", runtimeLabel);
         ImGui::SameLine();
-        if (ImGui::Button("Logs", ImVec2(100.0f, 0.0f))) {
-            showLogsPopup = true;
-            ImGui::OpenPopup("Logs");
+        ImGui::TextWrapped("%s", snapshot.statusMessage.c_str());
+
+        if (!snapshot.lastError.empty() && snapshot.state == idn_bridge::RuntimeState::Failed) {
+            ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", snapshot.lastError.c_str());
+        } else {
+            ImGui::TextDisabled("%zu bridgeable controllers | %zu enabled | %zu active endpoints",
+                                bridgeableCount(),
+                                selectedBridgeableCount(),
+                                snapshot.startedEndpoints);
         }
-
-        ImGui::SameLine();
-        ImGui::TextDisabled("Controllers: %zu discovered / %zu active",
-                            snapshot.discoveredControllers,
-                            snapshot.startedEndpoints);
-        ImGui::EndGroup();
+        ImGui::EndChild();
 
         ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
 
-        ImGui::Text("Detected DACs");
-        if (ImGui::BeginTable("DiscoveredControllers",
-                              7,
+        ImGui::BeginChild("DetectedDacsPanel", ImVec2(0.0f, 0.0f), true);
+        drawSectionTitle(app, "Detected Controllers");
+
+        if (!snapshot.discovered.empty() &&
+            ImGui::BeginTable("DiscoveredControllers",
+                              9,
                               ImGuiTableFlags_Borders |
-                              ImGuiTableFlags_RowBg |
-                              ImGuiTableFlags_SizingStretchProp)) {
+                                  ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_Resizable |
+                                  ImGuiTableFlags_SizingStretchProp |
+                                  ImGuiTableFlags_ScrollY |
+                                  ImGuiTableFlags_ScrollX,
+                              ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {
             const float enableSz = ImGui::GetFrameHeight() * 0.8f;
-
-            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 48.0f);
-            ImGui::TableSetupColumn("Bridge", ImGuiTableColumnFlags_WidthFixed, 48.0f);
-            ImGui::TableSetupColumn("Label");
-            ImGui::TableSetupColumn("Type");
-            ImGui::TableSetupColumn("Max PPS");
-            ImGui::TableSetupColumn("Usage");
-            ImGui::TableSetupColumn("Note");
+            const float controlGap = 7.0f;
+            const float rowHeight = ImGui::GetFrameHeight();
+            
+            ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+            ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 2.2f);
+            ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+            ImGui::TableSetupColumn("Max PPS", ImGuiTableColumnFlags_WidthFixed, 92.0f);
+            ImGui::TableSetupColumn("Service", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+            ImGui::TableSetupColumn("Rates", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+            ImGui::TableSetupColumn("Latency", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("Queue", ImGuiTableColumnFlags_WidthFixed, 96.0f);
+            ImGui::TableSetupColumn("Health", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+            ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
 
             for (const auto& controller : snapshot.discovered) {
                 ImGui::PushID(controller.id.c_str());
 
+                const auto endpointIt = endpointByControllerId.find(controller.id);
+                const idn_bridge::EndpointSnapshot* endpoint =
+                    endpointIt != endpointByControllerId.end() ? endpointIt->second : nullptr;
                 bool selected = enabledControllers.count(controller.id) > 0;
-                const bool active = activeControllerIds.count(controller.id) > 0;
+                const bool active = endpoint != nullptr;
+                const bool disabled = !controller.bridgeable;
+                const bool pendingSelectionChange =
+                    controller.bridgeable && selected && !active &&
+                    (startInFlight || stopInFlight || bridgeSyncPending || rescanInFlight);
+                const bool buffering = endpoint && endpoint->stats.buffering;
+                const bool hasUnderruns =
+                    endpoint && endpoint->stats.callbackUnderrunEvents > 0;
+                const bool hasDrops =
+                    endpoint && endpoint->stats.droppedPoints > 0;
+                const bool unhealthy = endpoint && (buffering || hasUnderruns || hasDrops);
+
                 const ImU32 statusCol = active
                                             ? IM_COL32(0, 255, 0, 255)
                                             : !controller.bridgeable
@@ -268,36 +347,65 @@ int main() {
                                                   : selected
                                                         ? IM_COL32(66, 150, 250, 255)
                                                         : IM_COL32(77, 77, 77, 255);
+                std::string stateLabel;
+                ImVec4 stateTextColor = ImVec4(0.68f, 0.72f, 0.78f, 1.0f);
 
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                libera::widgets::statusSquare("status", statusCol, enableSz);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (!controller.bridgeable) {
+                    stateLabel = "Unavailable";
+                    stateTextColor = ImVec4(0.95f, 0.78f, 0.32f, 1.0f);
+                } else if (active) {
+                    stateLabel = "Active";
+                    stateTextColor = ImVec4(0.40f, 0.88f, 0.55f, 1.0f);
+                } else if (pendingSelectionChange) {
+                    stateLabel = "Pending";
+                    stateTextColor = ImVec4(0.95f, 0.78f, 0.32f, 1.0f);
+                } else if (selected) {
+                    stateLabel = "Enabled";
+                    stateTextColor = ImVec4(0.53f, 0.76f, 1.0f, 1.0f);
+                } else {
+                    stateLabel = "Idle";
+                    stateTextColor = ImVec4(0.68f, 0.72f, 0.78f, 1.0f);
+                }
+
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
+                auto drawRowTooltip = [&]() {
                     ImGui::BeginTooltip();
                     ImGui::Text("%s", controller.label.c_str());
+                    ImGui::TextDisabled("ID: %s", controller.id.c_str());
                     ImGui::Text("Type: %s", controller.type.c_str());
+                    ImGui::Text("Usage: %s", controller.usage.c_str());
                     if (controller.maxPointRate > 0) {
                         ImGui::Text("Max: %u pps", controller.maxPointRate);
                     }
-                    if (active) {
-                        ImGui::TextUnformatted("Bridge active");
-                    } else if (!controller.bridgeable) {
-                        ImGui::TextUnformatted(controller.note.c_str());
-                    } else if (selected) {
-                        ImGui::TextUnformatted("Enabled for bridging");
-                    } else {
-                        ImGui::TextUnformatted("Disabled");
+                    if (!controller.note.empty()) {
+                        ImGui::TextWrapped("%s", controller.note.c_str());
+                    }
+                    if (endpoint) {
+                        ImGui::Separator();
+                        ImGui::Text("Service: %u", static_cast<unsigned>(endpoint->serviceId));
+                        ImGui::Text("Input: %u pps", endpoint->stats.observedInputPointRate);
+                        ImGui::Text("Output: %u pps", endpoint->stats.outputPointRate);
+                        ImGui::Text("Latency: %ums", endpoint->stats.latencyMs);
+                        ImGui::Text("Queue: %zu / %zu",
+                                    endpoint->stats.queuedPoints,
+                                    endpoint->stats.targetBufferedPoints);
+                        ImGui::Text("Blank fill: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.blankFillPoints));
+                        ImGui::Text("Underruns: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.callbackUnderrunEvents));
+                        ImGui::Text("Dropped: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.droppedPoints));
                     }
                     ImGui::EndTooltip();
-                }
+                };
 
                 ImGui::TableNextColumn();
-                if (!controller.bridgeable) {
-                    ImGui::BeginDisabled();
-                }
-                const bool toggled = libera::widgets::toggleButton("enable", &selected, false, enableSz);
-                if (!controller.bridgeable) {
-                    ImGui::EndDisabled();
+                const bool toggled =
+                    libera::widgets::toggleButton("enable", &selected, pendingSelectionChange, enableSz, nullptr, disabled);
+                ImGui::SameLine(0.0f, controlGap);
+                libera::widgets::statusSquare("status", statusCol, enableSz);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    drawRowTooltip();
                 }
                 if (selected) {
                     enabledControllers.insert(controller.id);
@@ -312,15 +420,96 @@ int main() {
                 }
 
                 ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted(controller.label.c_str());
+                if (ImGui::IsItemHovered()) {
+                    drawRowTooltip();
+                }
+
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(controller.type.c_str());
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(stateTextColor, "%s", stateLabel.c_str());
+
                 ImGui::TableNextColumn();
-                ImGui::Text("%u", controller.maxPointRate);
+                ImGui::AlignTextToFramePadding();
+                if (controller.maxPointRate > 0) {
+                    ImGui::Text("%u", controller.maxPointRate);
+                } else {
+                    ImGui::TextDisabled("n/a");
+                }
+
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(controller.usage.c_str());
+                ImGui::AlignTextToFramePadding();
+                if (endpoint) {
+                    ImGui::Text("%u", static_cast<unsigned>(endpoint->serviceId));
+                } else {
+                    ImGui::TextDisabled("-");
+                }
+
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(controller.note.c_str());
+                ImGui::AlignTextToFramePadding();
+                if (endpoint) {
+                    ImGui::Text("O %u / I %u",
+                                endpoint->stats.outputPointRate,
+                                endpoint->stats.observedInputPointRate);
+                } else {
+                    ImGui::TextDisabled("Not active");
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                if (endpoint) {
+                    ImGui::Text("%ums", endpoint->stats.latencyMs);
+                } else {
+                    ImGui::TextDisabled("-");
+                }
+                
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                if (endpoint) {
+                    ImGui::Text("%zu/%zu",
+                                endpoint->stats.queuedPoints,
+                                endpoint->stats.targetBufferedPoints);
+                } else {
+                    ImGui::TextDisabled("-");
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                if (endpoint) {
+                    if (buffering) {
+                        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.32f, 1.0f), "%s", "Buffering");
+                    } else if (unhealthy) {
+                        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.32f, 1.0f), "%s", "Issues");
+                    } else {
+                        ImGui::TextColored(ImVec4(0.40f, 0.88f, 0.55f, 1.0f), "%s", "Healthy");
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        if (buffering) {
+                            ImGui::TextWrapped("The controller is still filling its target buffer before steady playback.");
+                        }
+                        if (hasUnderruns) {
+                            ImGui::Text("Underruns: %llu",
+                                        static_cast<unsigned long long>(endpoint->stats.callbackUnderrunEvents));
+                            ImGui::TextWrapped("The bridge had to generate blank fallback points because not enough queued points were ready.");
+                        }
+                        if (hasDrops) {
+                            ImGui::Text("Dropped points: %llu",
+                                        static_cast<unsigned long long>(endpoint->stats.droppedPoints));
+                            ImGui::TextWrapped("Old queued points were discarded because the bridge queue hit its maximum size.");
+                        }
+                        if (!buffering && !hasUnderruns && !hasDrops) {
+                            ImGui::TextWrapped("No buffering, underruns, or dropped points have been recorded for this controller since it was started.");
+                        } else {
+                            ImGui::Separator();
+                            ImGui::TextDisabled("These counters are cumulative for the current bridge run.");
+                        }
+                        ImGui::EndTooltip();
+                    }
+                } else {
+                    ImGui::TextDisabled("Not active");
+                }
 
                 ImGui::PopID();
             }
@@ -330,86 +519,41 @@ int main() {
 
         if (snapshot.discovered.empty()) {
             if (snapshot.hasDiscoveryResults) {
-                ImGui::TextDisabled("No DACs found.");
+                ImGui::TextWrapped("No controllers were found during the last scan. Check connections or plugins, then rescan.");
             } else {
-                ImGui::TextDisabled("Click Scan to look for DACs before enabling any bridge connections.");
+                ImGui::TextWrapped("No scan results yet. Click RESCAN to discover controllers, then enable the ones you want to bridge.");
             }
+        } else if (bridgeableCount() == 0) {
+            ImGui::TextWrapped("Controllers were discovered, but none of them are currently bridgeable.");
         }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        ImGui::Text("Active Endpoints");
-        if (ImGui::BeginTable("Endpoints", 10, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
-            ImGui::TableSetupColumn("Service");
-            ImGui::TableSetupColumn("Label");
-            ImGui::TableSetupColumn("Type");
-            ImGui::TableSetupColumn("Output PPS");
-            ImGui::TableSetupColumn("Input PPS");
-            ImGui::TableSetupColumn("Latency");
-            ImGui::TableSetupColumn("Queue");
-            ImGui::TableSetupColumn("Underruns");
-            ImGui::TableSetupColumn("Dropped");
-            ImGui::TableSetupColumn("State");
-            ImGui::TableHeadersRow();
-
-            for (const auto& endpoint : snapshot.endpoints) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("%u", static_cast<unsigned>(endpoint.serviceId));
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(endpoint.label.c_str());
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(endpoint.type.c_str());
-                ImGui::TableNextColumn(); ImGui::Text("%u", endpoint.stats.outputPointRate);
-                ImGui::TableNextColumn(); ImGui::Text("%u", endpoint.stats.observedInputPointRate);
-                ImGui::TableNextColumn(); ImGui::Text("%ums", endpoint.stats.latencyMs);
-                ImGui::TableNextColumn(); ImGui::Text("%zu / %zu",
-                                                      endpoint.stats.queuedPoints,
-                                                      endpoint.stats.targetBufferedPoints);
-                ImGui::TableNextColumn(); ImGui::Text("%llu",
-                                                      static_cast<unsigned long long>(endpoint.stats.callbackUnderrunEvents));
-                ImGui::TableNextColumn(); ImGui::Text("%llu",
-                                                      static_cast<unsigned long long>(endpoint.stats.droppedPoints));
-                ImGui::TableNextColumn();
-                ImGui::TextColored(endpoint.stats.buffering
-                                       ? ImVec4(0.95f, 0.78f, 0.32f, 1.0f)
-                                       : ImVec4(0.40f, 0.88f, 0.55f, 1.0f),
-                                   "%s",
-                                   endpoint.stats.buffering ? "Buffering" : "Streaming");
-            }
-
-            ImGui::EndTable();
-        }
-
-        if (snapshot.endpoints.empty()) {
-            ImGui::TextDisabled("No active endpoints.");
-        }
+        ImGui::EndChild();
 
         ImGui::End();
 
-        ImGui::SetNextWindowSize(ImVec2(900.0f, 420.0f), ImGuiCond_Appearing);
-        if (ImGui::BeginPopupModal("Logs", &showLogsPopup, ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::BeginChild("LogsPopupContent", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing()), true);
-            if (snapshot.recentLogs.empty()) {
-                ImGui::TextDisabled("No logs yet.");
-            } else {
-                for (const auto& line : snapshot.recentLogs) {
-                    if (!snapshot.lastError.empty() && line == snapshot.lastError) {
-                        ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", line.c_str());
-                    } else {
-                        ImGui::TextUnformatted(line.c_str());
+        if (showLogsWindow) {
+            ImGui::SetNextWindowSize(ImVec2(900.0f, 420.0f), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("Bridge Logs", &showLogsWindow, ImGuiWindowFlags_NoCollapse)) {
+                ImGui::TextDisabled("Recent runtime messages. This window stays open while you keep working.");
+                ImGui::Separator();
+                ImGui::BeginChild("LogsWindowContent", ImVec2(0.0f, 0.0f), true);
+                const bool stickToBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY();
+                if (snapshot.recentLogs.empty()) {
+                    ImGui::TextDisabled("No logs yet.");
+                } else {
+                    for (const auto& line : snapshot.recentLogs) {
+                        if (!snapshot.lastError.empty() && line == snapshot.lastError) {
+                            ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", line.c_str());
+                        } else {
+                            ImGui::TextUnformatted(line.c_str());
+                        }
+                    }
+                    if (stickToBottom) {
+                        ImGui::SetScrollHereY(1.0f);
                     }
                 }
-                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-                    ImGui::SetScrollHereY(1.0f);
-                }
+                ImGui::EndChild();
             }
-            ImGui::EndChild();
-
-            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) {
-                showLogsPopup = false;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::EndPopup();
+            ImGui::End();
         }
 
         const auto targetControllerIds = selectedBridgeableIds();

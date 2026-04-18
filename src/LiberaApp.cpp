@@ -58,6 +58,7 @@ bool LiberaApp::init(const LiberaAppConfig& config) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     io.IniFilename = nullptr;
 
     float xscale = 1.0f;
@@ -100,21 +101,28 @@ bool LiberaApp::init(const LiberaAppConfig& config) {
     io.Fonts->AddFontFromMemoryCompressedTTF(
         ForkAwesome_compressed_data, ForkAwesome_compressed_size, largeFontSize, &mergeConfig, iconRanges);
 
-    io.Fonts->Build();
-    io.FontGlobalScale = 1.0f / dpiScale;
-
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
+    style.FontScaleMain = 1.0f / dpiScale;
     style.WindowRounding = 4.0f;
     style.WindowBorderSize = 0.0f;
+    style.ChildRounding = 6.0f;
+    style.ChildBorderSize = 1.0f;
+    style.PopupRounding = 6.0f;
+    style.PopupBorderSize = 1.0f;
     style.WindowPadding = ImVec2(16.0f, 16.0f);
     style.FramePadding = ImVec2(8.0f, 6.0f);
     style.FrameRounding = 3.0f;
     style.ItemSpacing = ImVec2(8.0f, 8.0f);
+    style.CellPadding = ImVec2(10.0f, 8.0f);
     style.GrabRounding = 2.0f;
+    style.ScrollbarSize = 12.0f;
 
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_WindowBg] = ImVec4(0.07f, 0.08f, 0.10f, 1.00f);
+    colors[ImGuiCol_ChildBg] = ImVec4(0.09f, 0.10f, 0.12f, 1.00f);
+    colors[ImGuiCol_PopupBg] = ImVec4(0.09f, 0.10f, 0.12f, 0.98f);
+    colors[ImGuiCol_Border] = ImVec4(0.18f, 0.22f, 0.27f, 0.95f);
     colors[ImGuiCol_TitleBg] = ImVec4(0.10f, 0.16f, 0.24f, 1.00f);
     colors[ImGuiCol_TitleBgActive] = ImVec4(0.13f, 0.23f, 0.35f, 1.00f);
     colors[ImGuiCol_Button] = ImVec4(0.20f, 0.42f, 0.68f, 0.85f);
@@ -126,6 +134,18 @@ bool LiberaApp::init(const LiberaAppConfig& config) {
     colors[ImGuiCol_FrameBg] = ImVec4(0.12f, 0.16f, 0.20f, 1.00f);
     colors[ImGuiCol_FrameBgHovered] = ImVec4(0.17f, 0.24f, 0.31f, 1.00f);
     colors[ImGuiCol_FrameBgActive] = ImVec4(0.17f, 0.28f, 0.41f, 1.00f);
+    colors[ImGuiCol_Separator] = ImVec4(0.20f, 0.25f, 0.31f, 1.00f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.58f, 0.62f, 0.68f, 1.00f);
+    colors[ImGuiCol_TableHeaderBg] = ImVec4(0.12f, 0.17f, 0.23f, 1.00f);
+    colors[ImGuiCol_TableBorderStrong] = ImVec4(0.20f, 0.25f, 0.31f, 1.00f);
+    colors[ImGuiCol_TableBorderLight] = ImVec4(0.15f, 0.18f, 0.23f, 1.00f);
+    colors[ImGuiCol_TableRowBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+    colors[ImGuiCol_TableRowBgAlt] = ImVec4(1.00f, 1.00f, 1.00f, 0.03f);
+
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        style.WindowRounding = 0.0f;
+        colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glslVersion);
@@ -154,6 +174,15 @@ void LiberaApp::endFrame() {
     glClearColor(0.06f, 0.07f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        GLFWwindow* backupContext = glfwGetCurrentContext();
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+        glfwMakeContextCurrent(backupContext);
+    }
+
     glfwSwapBuffers(window);
 }
 
