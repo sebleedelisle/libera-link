@@ -11,6 +11,7 @@
 #include <chrono>
 #include <future>
 #include <set>
+#include <utility>
 #include <string>
 
 namespace {
@@ -84,14 +85,36 @@ int main() {
     bool startInFlight = false;
     bool rescanInFlight = false;
     bool stopInFlight = false;
-    bool restartAfterStop = false;
+    bool bridgeSyncPending = false;
+    bool showLogsPopup = false;
     bool showPluginsWindow = false;
     std::set<std::string> enabledControllers; // IDs of controllers selected for bridging
+
+    auto launchSelectedStart = [&](std::set<std::string> selectedIds) {
+        if (selectedIds.empty()) {
+            return;
+        }
+
+        const idn_bridge::BridgeOptions options;
+        startFuture = std::async(std::launch::async,
+                                 [&runtime, options, selectedIds = std::move(selectedIds)] {
+                                     return runtime.start(options, selectedIds);
+                                 });
+        startInFlight = true;
+    };
+
+    auto launchStop = [&]() {
+        stopFuture = std::async(std::launch::async, [&runtime] {
+            runtime.stop();
+        });
+        stopInFlight = true;
+    };
 
     while (app.beginFrame()) {
         if (scanFuture.valid() && scanFuture.wait_for(0ms) == std::future_status::ready) {
             (void)scanFuture.get();
             scanInFlight = false;
+            bridgeSyncPending = true;
         }
         if (startFuture.valid() && startFuture.wait_for(0ms) == std::future_status::ready) {
             (void)startFuture.get();
@@ -101,19 +124,40 @@ int main() {
         if (stopFuture.valid() && stopFuture.wait_for(0ms) == std::future_status::ready) {
             stopFuture.get();
             stopInFlight = false;
-            if (restartAfterStop) {
-                restartAfterStop = false;
-                const idn_bridge::BridgeOptions options;
-                startFuture = std::async(std::launch::async, [&runtime, options] {
-                    return runtime.start(options);
-                });
-                startInFlight = true;
-            } else {
-                rescanInFlight = false;
-            }
         }
 
         const auto snapshot = runtime.snapshot();
+        if (snapshot.hasDiscoveryResults) {
+            std::set<std::string> bridgeableControllerIds;
+            for (const auto& controller : snapshot.discovered) {
+                if (controller.bridgeable) {
+                    bridgeableControllerIds.insert(controller.id);
+                }
+            }
+
+            for (auto it = enabledControllers.begin(); it != enabledControllers.end();) {
+                if (bridgeableControllerIds.find(*it) == bridgeableControllerIds.end()) {
+                    it = enabledControllers.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        std::set<std::string> activeControllerIds;
+        for (const auto& endpoint : snapshot.endpoints) {
+            activeControllerIds.insert(endpoint.id);
+        }
+
+        auto selectedBridgeableIds = [&]() {
+            std::set<std::string> selectedIds;
+            for (const auto& controller : snapshot.discovered) {
+                if (controller.bridgeable && enabledControllers.count(controller.id) > 0) {
+                    selectedIds.insert(controller.id);
+                }
+            }
+            return selectedIds;
+        };
 
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -130,61 +174,6 @@ int main() {
                                                false);
         if (logoHeight > 0.0f) {
             ImGui::Dummy(ImVec2(0.0f, logoHeight + 12.0f));
-        }
-
-        // --- Controller selection row ---
-        if (!snapshot.discovered.empty()) {
-            float enableSz = ImGui::GetFrameHeight() * 0.8f;
-
-            for (const auto& ctrl : snapshot.discovered) {
-                ImGui::PushID(ctrl.id.c_str());
-
-                bool selected = enabledControllers.count(ctrl.id) > 0;
-
-                if (!ctrl.bridgeable) ImGui::BeginDisabled();
-
-                // Status square: green if actively bridged, grey otherwise
-                ImU32 statusCol;
-                bool active = false;
-                for (const auto& ep : snapshot.endpoints) {
-                    if (ep.id == ctrl.id) { active = true; break; }
-                }
-                if (active)
-                    statusCol = IM_COL32(0, 255, 0, 255);
-                else if (selected)
-                    statusCol = IM_COL32(66, 150, 250, 255);
-                else
-                    statusCol = IM_COL32(77, 77, 77, 255);
-
-                libera::widgets::statusSquare("##status", statusCol, enableSz);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                    ImGui::BeginTooltip();
-                    ImGui::Text("%s", ctrl.label.c_str());
-                    ImGui::Text("Type: %s", ctrl.type.c_str());
-                    if (ctrl.maxPointRate > 0) ImGui::Text("Max: %u pps", ctrl.maxPointRate);
-                    if (!ctrl.bridgeable) ImGui::Text("%s", ctrl.note.c_str());
-                    else ImGui::Text("%s", active ? "Active" : (selected ? "Selected" : "Click to enable"));
-                    ImGui::EndTooltip();
-                }
-                ImGui::SameLine();
-
-                // Toggle button with controller label
-                libera::widgets::toggleButton("##enable", &selected, false, enableSz, ctrl.label.c_str());
-                if (selected)
-                    enabledControllers.insert(ctrl.id);
-                else
-                    enabledControllers.erase(ctrl.id);
-
-                if (!ctrl.bridgeable) ImGui::EndDisabled();
-
-                ImGui::SameLine();
-                ImGui::Spacing();
-                ImGui::SameLine();
-
-                ImGui::PopID();
-            }
-            ImGui::NewLine();
-            ImGui::Spacing();
         }
 
         ImGui::BeginGroup();
@@ -204,58 +193,40 @@ int main() {
             ImGui::BeginDisabled();
             ImGui::Button("Rescanning...", ImVec2(140.0f, 0.0f));
             ImGui::EndDisabled();
-        } else if (!startInFlight && !stopInFlight && snapshot.state != idn_bridge::RuntimeState::Running) {
-            if (ImGui::Button("Start Bridge", ImVec2(140.0f, 0.0f))) {
-                const idn_bridge::BridgeOptions options;
-                startFuture = std::async(std::launch::async, [&runtime, options] {
-                    return runtime.start(options);
-                });
-                startInFlight = true;
-            }
-        } else if (startInFlight) {
-            if (ImGui::Button("Cancel Start", ImVec2(140.0f, 0.0f))) {
-                runtime.requestStop();
-            }
         } else {
-            if (ImGui::Button("Stop Bridge", ImVec2(140.0f, 0.0f))) {
-                stopFuture = std::async(std::launch::async, [&runtime] {
-                    runtime.stop();
-                });
-                stopInFlight = true;
+            const bool bridgeRunning = snapshot.state == idn_bridge::RuntimeState::Running ||
+                                       snapshot.state == idn_bridge::RuntimeState::StopRequested;
+            const char* scanButtonLabel = bridgeRunning ? "Rescan" : "Scan";
+            const bool scanActionDisabled = startInFlight || stopInFlight;
+            if (scanActionDisabled) {
+                ImGui::BeginDisabled();
             }
-        }
-
-        ImGui::SameLine();
-        const bool bridgeRunning = snapshot.state == idn_bridge::RuntimeState::Running ||
-                                   snapshot.state == idn_bridge::RuntimeState::StopRequested;
-        const char* scanButtonLabel = bridgeRunning ? "Rescan" : "Scan";
-        const bool scanActionDisabled = scanInFlight || startInFlight || stopInFlight || rescanInFlight;
-        if (scanActionDisabled) {
-            ImGui::BeginDisabled();
-        }
-        if (ImGui::Button(scanButtonLabel, ImVec2(140.0f, 0.0f))) {
-            if (bridgeRunning) {
-                rescanInFlight = true;
-                restartAfterStop = true;
-                stopFuture = std::async(std::launch::async, [&runtime] {
-                    runtime.stop();
-                });
-                stopInFlight = true;
-            } else {
-                const idn_bridge::BridgeOptions options;
-                scanFuture = std::async(std::launch::async, [&runtime, options] {
-                    return runtime.scan(options);
-                });
-                scanInFlight = true;
+            if (ImGui::Button(scanButtonLabel, ImVec2(140.0f, 0.0f))) {
+                if (bridgeRunning) {
+                    rescanInFlight = true;
+                    bridgeSyncPending = false;
+                } else {
+                    const idn_bridge::BridgeOptions options;
+                    scanFuture = std::async(std::launch::async, [&runtime, options] {
+                        return runtime.scan(options);
+                    });
+                    scanInFlight = true;
+                }
             }
-        }
-        if (scanActionDisabled) {
-            ImGui::EndDisabled();
+            if (scanActionDisabled) {
+                ImGui::EndDisabled();
+            }
         }
 
         ImGui::SameLine();
         if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
             showPluginsWindow = true;
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Logs", ImVec2(100.0f, 0.0f))) {
+            showLogsPopup = true;
+            ImGui::OpenPopup("Logs");
         }
 
         ImGui::SameLine();
@@ -270,31 +241,88 @@ int main() {
 
         ImGui::Text("Detected DACs");
         if (ImGui::BeginTable("DiscoveredControllers",
-                              6,
+                              7,
                               ImGuiTableFlags_Borders |
                               ImGuiTableFlags_RowBg |
                               ImGuiTableFlags_SizingStretchProp)) {
+            const float enableSz = ImGui::GetFrameHeight() * 0.8f;
+
+            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+            ImGui::TableSetupColumn("Bridge", ImGuiTableColumnFlags_WidthFixed, 48.0f);
             ImGui::TableSetupColumn("Label");
             ImGui::TableSetupColumn("Type");
             ImGui::TableSetupColumn("Max PPS");
             ImGui::TableSetupColumn("Usage");
-            ImGui::TableSetupColumn("Bridge");
             ImGui::TableSetupColumn("Note");
             ImGui::TableHeadersRow();
 
             for (const auto& controller : snapshot.discovered) {
+                ImGui::PushID(controller.id.c_str());
+
+                bool selected = enabledControllers.count(controller.id) > 0;
+                const bool active = activeControllerIds.count(controller.id) > 0;
+                const ImU32 statusCol = active
+                                            ? IM_COL32(0, 255, 0, 255)
+                                            : !controller.bridgeable
+                                                  ? IM_COL32(242, 199, 92, 255)
+                                                  : selected
+                                                        ? IM_COL32(66, 150, 250, 255)
+                                                        : IM_COL32(77, 77, 77, 255);
+
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(controller.label.c_str());
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(controller.type.c_str());
-                ImGui::TableNextColumn(); ImGui::Text("%u", controller.maxPointRate);
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(controller.usage.c_str());
                 ImGui::TableNextColumn();
-                ImGui::TextColored(controller.bridgeable
-                                       ? ImVec4(0.40f, 0.88f, 0.55f, 1.0f)
-                                       : ImVec4(0.95f, 0.78f, 0.32f, 1.0f),
-                                   "%s",
-                                   controller.bridgeable ? "Yes" : "Skip");
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(controller.note.c_str());
+                libera::widgets::statusSquare("status", statusCol, enableSz);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("%s", controller.label.c_str());
+                    ImGui::Text("Type: %s", controller.type.c_str());
+                    if (controller.maxPointRate > 0) {
+                        ImGui::Text("Max: %u pps", controller.maxPointRate);
+                    }
+                    if (active) {
+                        ImGui::TextUnformatted("Bridge active");
+                    } else if (!controller.bridgeable) {
+                        ImGui::TextUnformatted(controller.note.c_str());
+                    } else if (selected) {
+                        ImGui::TextUnformatted("Enabled for bridging");
+                    } else {
+                        ImGui::TextUnformatted("Disabled");
+                    }
+                    ImGui::EndTooltip();
+                }
+
+                ImGui::TableNextColumn();
+                if (!controller.bridgeable) {
+                    ImGui::BeginDisabled();
+                }
+                const bool toggled = libera::widgets::toggleButton("enable", &selected, false, enableSz);
+                if (!controller.bridgeable) {
+                    ImGui::EndDisabled();
+                }
+                if (selected) {
+                    enabledControllers.insert(controller.id);
+                } else {
+                    enabledControllers.erase(controller.id);
+                }
+                if (toggled) {
+                    bridgeSyncPending = true;
+                    if (startInFlight) {
+                        runtime.requestStop();
+                    }
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(controller.label.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(controller.type.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", controller.maxPointRate);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(controller.usage.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(controller.note.c_str());
+
+                ImGui::PopID();
             }
 
             ImGui::EndTable();
@@ -304,7 +332,7 @@ int main() {
             if (snapshot.hasDiscoveryResults) {
                 ImGui::TextDisabled("No DACs found.");
             } else {
-                ImGui::TextDisabled("Click Scan to look for DACs before starting the bridge.");
+                ImGui::TextDisabled("Click Scan to look for DACs before enabling any bridge connections.");
             }
         }
 
@@ -356,25 +384,67 @@ int main() {
             ImGui::TextDisabled("No active endpoints.");
         }
 
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
+        ImGui::End();
 
-        ImGui::Text("Logs");
-        ImGui::BeginChild("Logs", ImVec2(0.0f, 0.0f), true);
-        for (const auto& line : snapshot.recentLogs) {
-            if (!snapshot.lastError.empty() && line == snapshot.lastError) {
-                ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", line.c_str());
+        ImGui::SetNextWindowSize(ImVec2(900.0f, 420.0f), ImGuiCond_Appearing);
+        if (ImGui::BeginPopupModal("Logs", &showLogsPopup, ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::BeginChild("LogsPopupContent", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing()), true);
+            if (snapshot.recentLogs.empty()) {
+                ImGui::TextDisabled("No logs yet.");
             } else {
-                ImGui::TextUnformatted(line.c_str());
+                for (const auto& line : snapshot.recentLogs) {
+                    if (!snapshot.lastError.empty() && line == snapshot.lastError) {
+                        ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", line.c_str());
+                    } else {
+                        ImGui::TextUnformatted(line.c_str());
+                    }
+                }
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+                    ImGui::SetScrollHereY(1.0f);
+                }
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) {
+                showLogsPopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+
+        const auto targetControllerIds = selectedBridgeableIds();
+        const bool bridgeRunning = snapshot.state == idn_bridge::RuntimeState::Running ||
+                                   snapshot.state == idn_bridge::RuntimeState::StopRequested;
+        const bool bridgeSelectionMatches = activeControllerIds == targetControllerIds;
+
+        if (!scanInFlight && !startInFlight && !stopInFlight) {
+            if (rescanInFlight) {
+                if (bridgeRunning) {
+                    launchStop();
+                } else if (!targetControllerIds.empty()) {
+                    bridgeSyncPending = false;
+                    launchSelectedStart(targetControllerIds);
+                } else {
+                    rescanInFlight = false;
+                }
+            } else if (bridgeSyncPending) {
+                if (bridgeRunning) {
+                    if (!bridgeSelectionMatches) {
+                        launchStop();
+                    } else {
+                        bridgeSyncPending = false;
+                    }
+                } else {
+                    if (!targetControllerIds.empty()) {
+                        bridgeSyncPending = false;
+                        launchSelectedStart(targetControllerIds);
+                    } else {
+                        bridgeSyncPending = false;
+                    }
+                }
             }
         }
-        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-            ImGui::SetScrollHereY(1.0f);
-        }
-        ImGui::EndChild();
 
-        ImGui::End();
         libera::ui::DrawPluginsWindow(&showPluginsWindow, idn_bridge::userPluginDirectory());
         app.endFrame();
     }

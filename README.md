@@ -1,6 +1,6 @@
 # IDN Bridge
 
-`IDN Bridge` discovers DACs with [`libera-core`](https://github.com/sebleedelisle/libera-core) and exposes each discovered DAC as an OpenIDN service endpoint.
+`IDN Bridge` discovers DACs with [`libera-laser`](https://github.com/sebleedelisle/libera-laser) and exposes each discovered DAC as an OpenIDN service endpoint.
 
 All discovered DACs are exposed as separate OpenIDN services on a single UDP port (default `7255`), matching standard OpenIDN behavior.
 
