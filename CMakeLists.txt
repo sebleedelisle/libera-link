@@ -1,11 +1,26 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(IDNBridge LANGUAGES CXX)
+execute_process(
+    COMMAND git describe --tags --abbrev=0
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_TAG
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE GIT_TAG_RESULT
+)
+if(GIT_TAG_RESULT EQUAL 0 AND GIT_TAG MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)")
+  set(PROJECT_VERSION_FROM_GIT "${CMAKE_MATCH_1}")
+else()
+  set(PROJECT_VERSION_FROM_GIT "0.0.0")
+endif()
+
+project(IDNBridge VERSION ${PROJECT_VERSION_FROM_GIT} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(IDN_BRIDGE_APP_VERSION "0.0.0")
+set(IDN_BRIDGE_APP_VERSION "${PROJECT_VERSION}")
+set(IDN_BRIDGE_APP_BUNDLE_NAME "Libera Portal")
 
 option(IDN_BRIDGE_USE_BUNDLED_LIBUSB "Use bundled libusb from libera-laser dependency tree" ON)
 option(IDN_BRIDGE_OPENIDN_BRIDGE_MODE "Enable bridge-specific OpenIDN behavior changes" ON)
@@ -198,6 +213,15 @@ if(IDN_BRIDGE_BUILD_GUI)
         src/fonts/RobotoBold.cpp
         src/fonts/ForkAwesome.cpp
     )
+    if(APPLE)
+      set(IDN_BRIDGE_MACOS_BUNDLE_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-portal.icns")
+      set_source_files_properties("${IDN_BRIDGE_MACOS_BUNDLE_ICON}" PROPERTIES
+          MACOSX_PACKAGE_LOCATION "Resources"
+      )
+      target_sources(idn_bridge_gui PRIVATE "${IDN_BRIDGE_MACOS_BUNDLE_ICON}")
+    elseif(WIN32)
+      target_sources(idn_bridge_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-portal.rc")
+    endif()
     target_include_directories(idn_bridge_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_definitions(idn_bridge_gui PRIVATE APP_VERSION="${IDN_BRIDGE_APP_VERSION}")
     target_link_libraries(idn_bridge_gui PRIVATE idn_bridge_core idn_bridge_imgui)
@@ -215,10 +239,11 @@ if(IDN_BRIDGE_BUILD_GUI)
     if(APPLE)
       set_target_properties(idn_bridge_gui PROPERTIES
           MACOSX_BUNDLE TRUE
-          MACOSX_BUNDLE_BUNDLE_NAME "Libera Portal"
+          MACOSX_BUNDLE_BUNDLE_NAME "${IDN_BRIDGE_APP_BUNDLE_NAME}"
           MACOSX_BUNDLE_GUI_IDENTIFIER "com.sebleedelisle.idn-bridge"
           MACOSX_BUNDLE_BUNDLE_VERSION "${IDN_BRIDGE_APP_VERSION}"
           MACOSX_BUNDLE_SHORT_VERSION_STRING "${IDN_BRIDGE_APP_VERSION}"
+          MACOSX_BUNDLE_ICON_FILE "libera-portal.icns"
           MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in"
       )
     endif()

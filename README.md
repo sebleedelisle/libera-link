@@ -11,10 +11,25 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
+Preferred preset-based builds:
+
+```bash
+cmake --preset release
+cmake --build --preset release --parallel
+```
+
 `IDN_BRIDGE_OPENIDN_BRIDGE_MODE` controls bridge-specific OpenIDN behavior:
 
 - `ON` (default): enables macOS/bridge behavior patches.
 - `OFF`: keeps original OpenIDN behavior paths.
+
+## CI / Release
+
+Cross-platform GitHub Actions CI and tag-based release packaging are configured in
+[`.github/workflows/build.yml`](.github/workflows/build.yml).
+
+Release setup and required GitHub secrets/variables are documented in
+[`docs/ci-release.md`](docs/ci-release.md).
 
 ## Run
 

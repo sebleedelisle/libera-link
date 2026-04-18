@@ -1,0 +1,309 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: CI Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            preset: release
+            artifact: libera-portal-macos-ci
+            artifact_paths: |
+              build/idn_bridge_gui.app
+              build/idn_bridge
+          - os: ubuntu-latest
+            preset: linux-release
+            artifact: libera-portal-linux-ci
+            artifact_paths: |
+              build/idn_bridge_gui
+              build/idn_bridge
+          - os: windows-latest
+            preset: win-release
+            artifact: libera-portal-windows-ci
+            artifact_paths: |
+              build/Release/idn_bridge_gui.exe
+              build/Release/idn_bridge.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libusb-1.0-0-dev \
+            libgl-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: ${{ matrix.artifact_paths }}
+
+  package-release:
+    name: Release Package (${{ matrix.os }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            preset: release
+            artifact: libera-portal-macos
+            package_path: libera-portal-macos.dmg
+          - os: ubuntu-latest
+            preset: linux-release
+            artifact: libera-portal-linux
+            package_path: libera-portal-linux.AppImage
+          - os: windows-latest
+            preset: win-release
+            artifact: libera-portal-windows
+            package_path: libera-portal-windows.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja create-dmg
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build imagemagick libusb-1.0-0-dev \
+            libgl-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Import Apple certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+      - name: Bundle libusb into app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          LIBUSB_PATH=$(otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb | awk '{print $1}' | sort -u)
+          echo "Current libusb path: $LIBUSB_PATH"
+
+          mkdir -p build/idn_bridge_gui.app/Contents/Frameworks
+          cp extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/macOS/libusb-1.0.0.dylib \
+            build/idn_bridge_gui.app/Contents/Frameworks/
+
+          install_name_tool -change "$LIBUSB_PATH" \
+            @executable_path/../Frameworks/libusb-1.0.0.dylib \
+            build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui
+
+          if otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep -q '@rpath/libusb'; then
+            echo "ERROR: libusb is still referenced via @rpath after install_name_tool"
+            otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb
+            exit 1
+          fi
+
+          install_name_tool -id @executable_path/../Frameworks/libusb-1.0.0.dylib \
+            build/idn_bridge_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
+
+          echo "Updated library paths:"
+          otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb
+
+      - name: Sign app bundle
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --options runtime \
+            --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
+            build/idn_bridge_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
+
+          codesign --deep --force --options runtime \
+            --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
+            build/idn_bridge_gui.app
+
+          codesign --verify --verbose build/idn_bridge_gui.app
+
+      - name: Notarize app
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent build/idn_bridge_gui.app "$RUNNER_TEMP/libera-portal-notarize.zip"
+
+          xcrun notarytool submit "$RUNNER_TEMP/libera-portal-notarize.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple build/idn_bridge_gui.app
+
+      - name: Package DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          rm -rf "build/Libera Portal.app"
+          mv build/idn_bridge_gui.app "build/Libera Portal.app"
+
+          create-dmg \
+            --volname "Libera Portal" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Libera Portal.app" 150 190 \
+            --app-drop-link 450 190 \
+            --no-internet-enable \
+            "libera-portal-macos.dmg" \
+            "build/Libera Portal.app" || true
+
+          test -f libera-portal-macos.dmg
+
+          codesign --force --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
+            libera-portal-macos.dmg
+
+      - name: Sign executable (Windows)
+        if: runner.os == 'Windows'
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE_NAME }}
+          files-folder: build/Release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Package AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          convert 'icons/libera-portal.ico[0]' libera-portal.png
+
+          sed 's/^          //' > libera-portal.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Libera Portal
+          Comment=IDN bridge for Libera-compatible laser controllers
+          Exec=idn_bridge_gui
+          Icon=libera-portal
+          Categories=Graphics;AudioVideo;
+          Terminal=false
+          EOF
+
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          export APPIMAGE_EXTRACT_AND_RUN=1
+
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            --executable build/idn_bridge_gui \
+            --desktop-file libera-portal.desktop \
+            --icon-file libera-portal.png
+
+          export OUTPUT=libera-portal-linux.AppImage
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p staging/libera-portal
+          cp build/Release/idn_bridge_gui.exe staging/libera-portal/
+          cp build/Release/idn_bridge.exe staging/libera-portal/
+          cp extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/Windows/x64/Release/dll/libusb-1.0.dll \
+            staging/libera-portal/ || true
+          cd staging && 7z a ../libera-portal-windows.zip libera-portal
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: ${{ matrix.package_path }}
+
+      - name: Cleanup keychain
+        if: runner.os == 'macOS' && always()
+        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            libera-portal-macos/libera-portal-macos.dmg
+            libera-portal-linux/libera-portal-linux.AppImage
+            libera-portal-windows/libera-portal-windows.zip
+          generate_release_notes: true
