@@ -119,9 +119,9 @@ std::shared_ptr<SliceBuf> DACHWInterface::getNextBuffer(TransformEnv &tfEnv, uns
                 if(srcLen != 0)
                 {
                     // Copy the remainder of the fragment
-                    uint8_t sample[sampleSize];
-                    memcpy(sample, srcPtr, srcLen);
-                    uint8_t *contPtr = &sample[srcLen];
+                    std::vector<uint8_t> sample(sampleSize);
+                    memcpy(sample.data(), srcPtr, srcLen);
+                    uint8_t *contPtr = sample.data() + srcLen;
                     unsigned leftover = sampleSize - srcLen;
 
                     // Get the next fragment, abort in case of short data
@@ -139,7 +139,7 @@ std::shared_ptr<SliceBuf> DACHWInterface::getNextBuffer(TransformEnv &tfEnv, uns
                     srcLen -= leftover;
 
                     // Decode the sample
-                    decoder->decode(dstPtr, sample);
+                    decoder->decode(dstPtr, sample.data());
                     dstPtr = &dstPtr[sizeof(ISPDB25Point)];
                 }
                 else
@@ -293,4 +293,3 @@ std::shared_ptr<SliceBuf> DACHWInterface::getNextBuffer(TransformEnv &tfEnv, uns
     }
     return sliceBuf;
 }
-
