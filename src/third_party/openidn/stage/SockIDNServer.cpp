@@ -33,17 +33,27 @@
 // Standard libraries
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <stdio.h>
 #include <time.h>
+#include <chrono>
 
 // Platform includes
 #include <errno.h>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#else
+#include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <arpa/inet.h>      /* IP address conversion stuff */
 #include <net/if.h>
 #include <netdb.h>          /* getnameinfo */
+#endif
 
 // Project headers
 #include "../shared/ODFTools.hpp"
@@ -70,7 +80,7 @@ typedef struct
     struct sockaddr_storage remoteAddr;
     socklen_t remoteAddrSize;
 
-    int fdSocket;
+    OPENIDN_SOCKET fdSocket;
     uint8_t *sendBufferPtr;
     unsigned sendBufferSize;
 
@@ -86,8 +96,10 @@ typedef struct
 // -------------------------------------------------------------------------------------------------
 
 static int plt_monoValid = 0;
+#if !defined(_WIN32)
 static struct timespec plt_monoRef = { 0 };
 static uint32_t plt_monoTimeUS = 0;
+#endif
 
 
 
@@ -97,6 +109,10 @@ static uint32_t plt_monoTimeUS = 0;
 
 static int plt_validateMonoTime()
 {
+#if defined(_WIN32)
+    plt_monoValid = 1;
+    return 0;
+#else
     if(!plt_monoValid)
     {
         // Initialize time reference
@@ -108,11 +124,18 @@ static int plt_validateMonoTime()
     }
 
     return 0;
+#endif
 }
 
 
 static uint32_t plt_getMonoTimeUS()
 {
+#if defined(_WIN32)
+    static const auto plt_monoRef = std::chrono::steady_clock::now();
+    const auto tsNow = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(tsNow - plt_monoRef).count();
+    return static_cast<uint32_t>(elapsed & 0xFFFFFFFFu);
+#else
     extern struct timespec plt_monoRef;
     extern uint32_t plt_monoTimeUS;
 
@@ -149,6 +172,44 @@ static uint32_t plt_getMonoTimeUS()
     }
 
     return plt_monoTimeUS;
+#endif
+}
+
+static int plt_socketError()
+{
+#if defined(_WIN32)
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+static int plt_setNonBlocking(OPENIDN_SOCKET fdSocket)
+{
+#if defined(_WIN32)
+    u_long nonBlocking = 1;
+    return ioctlsocket(fdSocket, FIONBIO, &nonBlocking);
+#else
+    return fcntl(fdSocket, F_SETFL, O_NONBLOCK);
+#endif
+}
+
+static bool plt_socketIsInvalid(OPENIDN_SOCKET fdSocket)
+{
+#if defined(_WIN32)
+    return fdSocket == INVALID_SOCKET;
+#else
+    return fdSocket < 0;
+#endif
+}
+
+static void plt_closeSocket(OPENIDN_SOCKET fdSocket)
+{
+#if defined(_WIN32)
+    closesocket(fdSocket);
+#else
+    close(fdSocket);
+#endif
 }
 
 
@@ -365,7 +426,7 @@ int SockIDNHelloConnection::clientMatchIDNHello(RECV_COOKIE *cookie, uint8_t cli
 //  scope: private
 // -------------------------------------------------------------------------------------------------
 
-int SockIDNServer::receiveUDP(ODF_ENV *env, int fdSocket, uint32_t usRecvTime)
+int SockIDNServer::receiveUDP(ODF_ENV *env, OPENIDN_SOCKET fdSocket, uint32_t usRecvTime)
 {
     TracePrinter tpr(env, "IDNServer~receiveUDP");
 
@@ -396,12 +457,16 @@ int SockIDNServer::receiveUDP(ODF_ENV *env, int fdSocket, uint32_t usRecvTime)
         // No packet processing in case of errors
         if (recvLen < 0)
         {
+#if defined(_WIN32)
+            if (plt_socketError() == WSAEWOULDBLOCK)
+#else
             if ((errno == EWOULDBLOCK) || (errno == EAGAIN))
+#endif
             {
                 result = 0;
                 break;
             }
-            tpr.logError("recv: recvfrom() failed, errno=%d", errno);
+            tpr.logError("recv: recvfrom() failed, errno=%d", plt_socketError());
             break;
         }
 
@@ -528,7 +593,7 @@ int SockIDNServer::receiveUDP(ODF_ENV *env, int fdSocket, uint32_t usRecvTime)
 }
 
 
-int SockIDNServer::mainNetLoop(ODF_ENV *env, int fdSocket)
+int SockIDNServer::mainNetLoop(ODF_ENV *env, OPENIDN_SOCKET fdSocket)
 {
     TracePrinter tpr(env, "SockIDNServer~mainNetLoop");
 
@@ -547,14 +612,24 @@ int SockIDNServer::mainNetLoop(ODF_ENV *env, int fdSocket)
         tv.tv_usec = (timeoutMS % 1000) * 1000;
 
         // Wait for data, remember the ready/reception time
-        int numReady = select(fdSocket + 1, &rfds, 0, 0, &tv);
+        int numReady = select(
+#if defined(_WIN32)
+            0,
+#else
+            fdSocket + 1,
+#endif
+            &rfds, 0, 0, &tv);
         uint32_t usRecvTime = plt_getMonoTimeUS();
         if(numReady < 0)
         {
             // Error / Interrupt -- report success in case of interrupt
+#if defined(_WIN32)
+            if (plt_socketError() != WSAEINTR)
+#else
             if (errno != EINTR)
+#endif
             {
-                tpr.logError("select() failed, errno=%d", errno);
+                tpr.logError("select() failed, errno=%d", plt_socketError());
                 result = -1;
             }
             break;
@@ -659,31 +734,49 @@ void SockIDNServer::networkThreadFunc()
 
     ODFEnvironment odfEnv;
     ODF_ENV *env = &odfEnv;
-
+    
+#if defined(_WIN32)
+    WSADATA wsaData;
+    if(WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
+        printf("WSAStartup() failed, errno=%d\n", plt_socketError());
+        signalStartupFailure("WSAStartup() failed");
+        return;
+    }
+#endif
 
     if(plt_validateMonoTime() < 0)
     {
         printf("Cannot initialize monotonic time\n");
         signalStartupFailure("Cannot initialize monotonic time");
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return;
     }
 
 
     // Create UDP socket
-    int fdSocket;
-    if ((fdSocket = socket(PF_INET, SOCK_DGRAM, 0)) < 0)
+    OPENIDN_SOCKET fdSocket;
+    if (plt_socketIsInvalid(fdSocket = socket(PF_INET, SOCK_DGRAM, 0)))
     {
-        printf("socket() failed, errno=%d\n", errno);
+        printf("socket() failed, errno=%d\n", plt_socketError());
         signalStartupFailure("socket() failed");
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return;
     }
 
     // Set non-blocking
-    if (fcntl(fdSocket, F_SETFL, O_NONBLOCK) < 0)
+    if (plt_setNonBlocking(fdSocket) < 0)
     {
-        printf("Socket non-blocking failed, errno=%d\n", errno);
-        close(fdSocket);
+        printf("Socket non-blocking failed, errno=%d\n", plt_socketError());
+        plt_closeSocket(fdSocket);
         signalStartupFailure("Socket non-blocking failed");
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return;
     }
 
@@ -694,9 +787,12 @@ void SockIDNServer::networkThreadFunc()
     sockaddr.sin_port = htons(IDNVAL_HELLO_UDP_PORT);
     if (bind(fdSocket, (struct sockaddr *) &sockaddr, sizeof(sockaddr))<0)
     {
-        printf("bind() failed, errno=%d\n", errno);
-        close(fdSocket);
+        printf("bind() failed, errno=%d\n", plt_socketError());
+        plt_closeSocket(fdSocket);
         signalStartupFailure("bind() failed");
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return;
     }
 
@@ -710,7 +806,7 @@ void SockIDNServer::networkThreadFunc()
     if (ioctl(fdSocket, SIOCGIFCONF, &ifc) == -1)
     {
         printf("Problem ioctl SIOCGIFCONF\n");
-        close(fdSocket);
+        plt_closeSocket(fdSocket);
         signalStartupFailure("Problem ioctl SIOCGIFCONF");
         return;
     }
@@ -751,7 +847,7 @@ void SockIDNServer::networkThreadFunc()
         else
         {
             printf("Problem enumerate ioctl SIOCGIFHWADDR\n");
-            close(fdSocket);
+            plt_closeSocket(fdSocket);
             signalStartupFailure("Problem enumerate ioctl SIOCGIFHWADDR");
             return;
         }
@@ -851,7 +947,11 @@ void SockIDNServer::networkThreadFunc()
     housekeeping(env, 0);
 
     // Close network Socket
-    close(fdSocket);
+    plt_closeSocket(fdSocket);
+
+#if defined(_WIN32)
+    WSACleanup();
+#endif
 
     // Print status
     printf("IDN server terminated. Taxi count = %u\n", odfEnv.taxiSource.taxiCount.load());

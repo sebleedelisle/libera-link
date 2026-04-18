@@ -41,6 +41,18 @@
 #include <mutex>
 #include <string>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using OPENIDN_SOCKET = SOCKET;
+#else
+#include <sys/socket.h>
+using OPENIDN_SOCKET = int;
+#endif
+
 // Project headers
 #include "../server/IDNServer.hpp"
 
@@ -90,8 +102,8 @@ class SockIDNServer: public IDNServer
     bool startupSucceeded = false;
     std::string startupError;
 
-    int receiveUDP(ODF_ENV *env, int fdSocket, uint32_t usRecvTime);
-    int mainNetLoop(ODF_ENV *env, int fdSocket);
+    int receiveUDP(ODF_ENV *env, OPENIDN_SOCKET fdSocket, uint32_t usRecvTime);
+    int mainNetLoop(ODF_ENV *env, OPENIDN_SOCKET fdSocket);
     void signalStartupSuccess();
     void signalStartupFailure(const char *message);
 

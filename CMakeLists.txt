@@ -86,6 +86,9 @@ endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(openidn-core PUBLIC Threads::Threads)
+if(WIN32)
+  target_link_libraries(openidn-core PUBLIC ws2_32)
+endif()
 
 add_library(idn_bridge_core STATIC
     src/BridgeRuntime.cpp
