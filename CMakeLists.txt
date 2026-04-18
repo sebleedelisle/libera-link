@@ -20,7 +20,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(IDN_BRIDGE_APP_VERSION "${PROJECT_VERSION}")
-set(IDN_BRIDGE_APP_BUNDLE_NAME "Libera Portal")
+set(IDN_BRIDGE_APP_BUNDLE_NAME "Libera Port")
 
 option(IDN_BRIDGE_USE_BUNDLED_LIBUSB "Use bundled libusb from libera-laser dependency tree" ON)
 option(IDN_BRIDGE_OPENIDN_BRIDGE_MODE "Enable bridge-specific OpenIDN behavior changes" ON)
@@ -217,13 +217,13 @@ if(IDN_BRIDGE_BUILD_GUI)
         src/fonts/ForkAwesome.cpp
     )
     if(APPLE)
-      set(IDN_BRIDGE_MACOS_BUNDLE_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-portal.icns")
+      set(IDN_BRIDGE_MACOS_BUNDLE_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-port.icns")
       set_source_files_properties("${IDN_BRIDGE_MACOS_BUNDLE_ICON}" PROPERTIES
           MACOSX_PACKAGE_LOCATION "Resources"
       )
       target_sources(idn_bridge_gui PRIVATE "${IDN_BRIDGE_MACOS_BUNDLE_ICON}")
     elseif(WIN32)
-      target_sources(idn_bridge_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-portal.rc")
+      target_sources(idn_bridge_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-port.rc")
     endif()
     target_include_directories(idn_bridge_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_definitions(idn_bridge_gui PRIVATE APP_VERSION="${IDN_BRIDGE_APP_VERSION}")
@@ -246,7 +246,7 @@ if(IDN_BRIDGE_BUILD_GUI)
           MACOSX_BUNDLE_GUI_IDENTIFIER "com.sebleedelisle.idn-bridge"
           MACOSX_BUNDLE_BUNDLE_VERSION "${IDN_BRIDGE_APP_VERSION}"
           MACOSX_BUNDLE_SHORT_VERSION_STRING "${IDN_BRIDGE_APP_VERSION}"
-          MACOSX_BUNDLE_ICON_FILE "libera-portal.icns"
+          MACOSX_BUNDLE_ICON_FILE "libera-port.icns"
           MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in"
       )
     endif()

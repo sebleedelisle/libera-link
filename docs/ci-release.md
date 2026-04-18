@@ -2,21 +2,21 @@
 
 This repo uses GitHub Actions for:
 
-- unsigned CI builds on `push` to `main`
+- signed, packaged builds on `push` to `main`
 - unsigned CI builds on pull requests targeting `main`
-- signed, packaged releases on tags matching `v*`
+- signed, packaged builds on tags matching `v*`
 
 The workflow lives at [`.github/workflows/build.yml`](../.github/workflows/build.yml).
 
 ## What It Builds
 
-CI builds run on:
+Builds run on:
 
 - macOS
 - Linux
 - Windows
 
-Tag releases package:
+Push and tag builds package:
 
 - macOS: signed and notarized `.dmg`
 - Linux: `.AppImage`
@@ -54,11 +54,11 @@ Set these repository variables for Windows signing:
 ## Trigger Behavior
 
 - `push` to `main`
-  Builds the app on macOS, Linux, and Windows and uploads CI artifacts.
+  Builds, signs/packages, and uploads artifacts for macOS, Linux, and Windows.
 - `pull_request` to `main`
-  Builds the app on macOS, Linux, and Windows and uploads CI artifacts.
+  Builds the app on macOS, Linux, and Windows and uploads unsigned CI artifacts.
 - tag `vX.Y.Z`
-  Rebuilds on all three platforms, signs/packages artifacts, and creates a GitHub Release.
+  Builds, signs/packages on all three platforms, and creates a GitHub Release.
 
 ## Release Process
 
@@ -73,7 +73,7 @@ git push origin v0.1.0
 
 4. Wait for the tagged `Build` workflow to complete.
 5. Verify the GitHub Release contains:
-   `libera-portal-macos.dmg`, `libera-portal-linux.AppImage`, `libera-portal-windows.zip`
+   `libera-port-macos.dmg`, `libera-port-linux.AppImage`, `libera-port-windows.zip`
 
 ## Notes
 

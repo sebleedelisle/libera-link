@@ -10,29 +10,32 @@ on:
 
 jobs:
   build:
-    name: CI Build (${{ matrix.os }})
+    name: Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             preset: release
-            artifact: libera-portal-macos-ci
-            artifact_paths: |
+            artifact: libera-port-macos
+            pr_artifact_paths: |
               build/idn_bridge_gui.app
               build/idn_bridge
+            package_path: libera-port-macos.dmg
           - os: ubuntu-latest
             preset: linux-release
-            artifact: libera-portal-linux-ci
-            artifact_paths: |
+            artifact: libera-port-linux
+            pr_artifact_paths: |
               build/idn_bridge_gui
               build/idn_bridge
+            package_path: libera-port-linux.AppImage
           - os: windows-latest
             preset: win-release
-            artifact: libera-portal-windows-ci
-            artifact_paths: |
+            artifact: libera-port-windows
+            pr_artifact_paths: |
               build/Release/idn_bridge_gui.exe
               build/Release/idn_bridge.exe
+            package_path: libera-port-windows.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -47,6 +50,11 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew list ninja >/dev/null 2>&1 || brew install ninja
+
+      - name: Install packaging dependencies (macOS)
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
+        run: |
+          brew list create-dmg >/dev/null 2>&1 || brew install create-dmg
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -63,66 +71,8 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel
 
-      - name: Upload CI artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          if-no-files-found: error
-          path: ${{ matrix.artifact_paths }}
-
-  package-release:
-    name: Release Package (${{ matrix.os }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            preset: release
-            artifact: libera-portal-macos
-            package_path: libera-portal-macos.dmg
-          - os: ubuntu-latest
-            preset: linux-release
-            artifact: libera-portal-linux
-            package_path: libera-portal-linux.AppImage
-          - os: windows-latest
-            preset: win-release
-            artifact: libera-portal-windows
-            package_path: libera-portal-windows.zip
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          submodules: recursive
-
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew list ninja >/dev/null 2>&1 || brew install ninja
-          brew list create-dmg >/dev/null 2>&1 || brew install create-dmg
-
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build imagemagick libusb-1.0-0-dev \
-            libgl-dev libx11-dev libxrandr-dev libxinerama-dev \
-            libxcursor-dev libxi-dev libxkbcommon-dev \
-            libwayland-dev wayland-protocols libdecor-0-dev
-
-      - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
-
-      - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} --parallel
-
       - name: Import Apple certificate
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -145,7 +95,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
       - name: Bundle libusb into app (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
           LIBUSB_PATH=$(otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb | awk '{print $1}' | sort -u)
           echo "Current libusb path: $LIBUSB_PATH"
@@ -171,7 +121,7 @@ jobs:
           otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb
 
       - name: Sign app bundle
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
           codesign --force --options runtime \
             --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
@@ -184,15 +134,15 @@ jobs:
           codesign --verify --verbose build/idn_bridge_gui.app
 
       - name: Notarize app
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          ditto -c -k --keepParent build/idn_bridge_gui.app "$RUNNER_TEMP/libera-portal-notarize.zip"
+          ditto -c -k --keepParent build/idn_bridge_gui.app "$RUNNER_TEMP/libera-port-notarize.zip"
 
-          xcrun notarytool submit "$RUNNER_TEMP/libera-portal-notarize.zip" \
+          xcrun notarytool submit "$RUNNER_TEMP/libera-port-notarize.zip" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
@@ -201,29 +151,29 @@ jobs:
           xcrun stapler staple build/idn_bridge_gui.app
 
       - name: Package DMG (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
-          rm -rf "build/Libera Portal.app"
-          mv build/idn_bridge_gui.app "build/Libera Portal.app"
+          rm -rf "build/Libera Port.app"
+          mv build/idn_bridge_gui.app "build/Libera Port.app"
 
           create-dmg \
-            --volname "Libera Portal" \
+            --volname "Libera Port" \
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 100 \
-            --icon "Libera Portal.app" 150 190 \
+            --icon "Libera Port.app" 150 190 \
             --app-drop-link 450 190 \
             --no-internet-enable \
-            "libera-portal-macos.dmg" \
-            "build/Libera Portal.app" || true
+            "libera-port-macos.dmg" \
+            "build/Libera Port.app" || true
 
-          test -f libera-portal-macos.dmg
+          test -f libera-port-macos.dmg
 
           codesign --force --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
-            libera-portal-macos.dmg
+            libera-port-macos.dmg
 
       - name: Sign executable (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -239,17 +189,17 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Package AppImage (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
-          convert 'icons/libera-portal.ico[0]' libera-portal.png
+          cp icons/libera-port.png libera-port.png
 
-          sed 's/^          //' > libera-portal.desktop <<'EOF'
+          sed 's/^          //' > libera-port.desktop <<'EOF'
           [Desktop Entry]
           Type=Application
-          Name=Libera Portal
+          Name=Libera Port
           Comment=IDN bridge for Libera-compatible laser controllers
           Exec=idn_bridge_gui
-          Icon=libera-portal
+          Icon=libera-port
           Categories=Graphics;AudioVideo;
           Terminal=false
           EOF
@@ -260,24 +210,33 @@ jobs:
 
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
             --executable build/idn_bridge_gui \
-            --desktop-file libera-portal.desktop \
-            --icon-file libera-portal.png
+            --desktop-file libera-port.desktop \
+            --icon-file libera-port.png
 
-          export OUTPUT=libera-portal-linux.AppImage
+          export OUTPUT=libera-port-linux.AppImage
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
 
       - name: Package (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: bash
         run: |
-          mkdir -p staging/libera-portal
-          cp build/Release/idn_bridge_gui.exe staging/libera-portal/
-          cp build/Release/idn_bridge.exe staging/libera-portal/
+          mkdir -p staging/libera-port
+          cp build/Release/idn_bridge_gui.exe staging/libera-port/
+          cp build/Release/idn_bridge.exe staging/libera-port/
           cp extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/Windows/x64/Release/dll/libusb-1.0.dll \
-            staging/libera-portal/ || true
-          cd staging && 7z a ../libera-portal-windows.zip libera-portal
+            staging/libera-port/ || true
+          cd staging && 7z a ../libera-port-windows.zip libera-port
 
-      - name: Upload release artifact
+      - name: Upload PR build artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}-ci
+          if-no-files-found: error
+          path: ${{ matrix.pr_artifact_paths }}
+
+      - name: Upload packaged artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
@@ -285,12 +244,12 @@ jobs:
           path: ${{ matrix.package_path }}
 
       - name: Cleanup keychain
-        if: runner.os == 'macOS' && always()
+        if: runner.os == 'macOS' && github.event_name != 'pull_request' && always()
         run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: package-release
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -303,7 +262,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            libera-portal-macos/libera-portal-macos.dmg
-            libera-portal-linux/libera-portal-linux.AppImage
-            libera-portal-windows/libera-portal-windows.zip
+            libera-port-macos/libera-port-macos.dmg
+            libera-port-linux/libera-port-linux.AppImage
+            libera-port-windows/libera-port-windows.zip
           generate_release_notes: true

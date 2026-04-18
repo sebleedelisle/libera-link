@@ -25,7 +25,7 @@ cmake --build --preset release --parallel
 
 ## CI / Release
 
-Cross-platform GitHub Actions CI and tag-based release packaging are configured in
+Cross-platform GitHub Actions CI, signing, and release packaging are configured in
 [`.github/workflows/build.yml`](.github/workflows/build.yml).
 
 Release setup and required GitHub secrets/variables are documented in
