@@ -182,6 +182,7 @@ jobs:
           endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
           certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE_NAME }}
+          cache-dependencies: false
           files-folder: build/Release
           files-folder-filter: exe
           file-digest: SHA256
