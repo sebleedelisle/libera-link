@@ -253,6 +253,7 @@ if(LIBERA_LINK_BUILD_GUI)
     if(APPLE)
       set_target_properties(libera_link_gui PROPERTIES
           MACOSX_BUNDLE TRUE
+          OUTPUT_NAME "${LIBERA_LINK_APP_BUNDLE_NAME}"
           MACOSX_BUNDLE_BUNDLE_NAME "${LIBERA_LINK_APP_BUNDLE_NAME}"
           MACOSX_BUNDLE_GUI_IDENTIFIER "com.sebleedelisle.libera-link"
           MACOSX_BUNDLE_BUNDLE_VERSION "${LIBERA_LINK_APP_VERSION}"
