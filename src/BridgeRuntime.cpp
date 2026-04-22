@@ -1,5 +1,7 @@
 #include "BridgeRuntime.hpp"
 #include "LiberaPaths.hpp"
+#include "ingest/IdnIngester.hpp"
+#include "ingest/IngesterRegistry.hpp"
 
 #include "libera/System.hpp"
 #include "libera/core/LaserController.hpp"
@@ -9,18 +11,11 @@
 #include "libera/lasercubenet/LaserCubeNetManager.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbManager.hpp"
 
-#include "output/V1LaproGraphOut.hpp"
-#include "server/IDNLaproService.hpp"
-#include "shared/DACHWInterface.hpp"
-#include "stage/SockIDNServer.hpp"
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
 #include <deque>
 #include <exception>
 #include <iostream>
@@ -112,15 +107,35 @@ std::string describeController(const libera::core::ControllerInfo& info) {
 }
 
 void printUsageImpl(const char* exe, std::ostream& out) {
+    ingest::ensureBuiltInIdnIngesterLinked();
+    const auto defaultIngester = ingest::defaultIngester();
+    const auto availableIngesters = ingest::availableIngesters();
     out << "Usage: " << exe << " [options]\n"
         << "  --discovery-timeout-ms <ms>    Libera discovery wait time (default 5000)\n"
         << "  --max-dacs <count>             Limit number of bridged controllers (default all)\n"
+        << "  --ingester <id>                Ingester to run (default "
+        << (defaultIngester ? defaultIngester->id : "none") << ")\n"
+        << "  --ingester-opt <key=value>     Pass a custom option to the selected ingester\n"
         << "  --slice-us <us>                Driver slice duration in microseconds (default 15000)\n"
         << "  --max-queue-points <count>     Max queued translated points per controller (default 300000)\n"
         << "  --latency-ms <ms>              Target buffered latency in milliseconds (default 50)\n"
         << "  --max-latency-ms <ms>          Max auto latency in milliseconds (default 1500)\n"
         << "  --no-auto-latency              Disable automatic latency increase on underrun\n"
         << "  --help                         Show this message\n";
+
+    if (!availableIngesters.empty()) {
+        out << "\nAvailable ingesters:\n";
+        for (const auto& info : availableIngesters) {
+            out << "  " << info.id << "  " << info.displayName;
+            if (info.defaultSelection) {
+                out << " [default]";
+            }
+            if (!info.description.empty()) {
+                out << " - " << info.description;
+            }
+            out << "\n";
+        }
+    }
 }
 
 bool parseUnsigned(const std::string& text, std::uint64_t& value) {
@@ -137,7 +152,18 @@ bool parseUnsigned(const std::string& text, std::uint64_t& value) {
     }
 }
 
-class LiberaDacAdapter final : public DACHWInterface {
+bool parseKeyValue(std::string_view text, std::string& key, std::string& value) {
+    const auto equals = text.find('=');
+    if (equals == std::string_view::npos || equals == 0 || equals + 1 >= text.size()) {
+        return false;
+    }
+
+    key.assign(text.substr(0, equals));
+    value.assign(text.substr(equals + 1));
+    return true;
+}
+
+class LiberaTarget final : public ingest::TargetSink {
 public:
     struct StatsSnapshot {
         std::uint64_t receivedSlices = 0;
@@ -161,17 +187,16 @@ public:
         bool buffering = false;
     };
 
-    LiberaDacAdapter(std::shared_ptr<libera::core::LaserController> controller,
-                     std::string displayName,
-                     unsigned maxPointRateValue,
-                     std::size_t maxQueuedPoints,
-                     std::uint32_t latencyMs,
-                     std::uint32_t maxLatencyMs,
-                     bool autoLatency,
-                     LogSink logger)
+    LiberaTarget(std::shared_ptr<libera::core::LaserController> controller,
+                 ingest::TargetInfo info,
+                 std::size_t maxQueuedPoints,
+                 std::uint32_t latencyMs,
+                 std::uint32_t maxLatencyMs,
+                 bool autoLatency,
+                 LogSink logger)
         : controller_(std::move(controller))
-        , displayName_(std::move(displayName))
-        , maxPointRateValue_(maxPointRateValue > 0 ? maxPointRateValue : 100000u)
+        , info_(std::move(info))
+        , maxPointRateValue_(info_.maxPointRate > 0 ? info_.maxPointRate : 100000u)
         , maxQueuedPoints_(std::max<std::size_t>(maxQueuedPoints, 1000))
         , latencyMs_(latencyMs)
         , maxLatencyMs_(std::max(maxLatencyMs, latencyMs))
@@ -191,32 +216,27 @@ public:
             });
     }
 
-    ~LiberaDacAdapter() override {
+    ~LiberaTarget() override {
         if (controller_) {
             controller_->setRequestPointsCallback({});
         }
     }
 
-    int writeFrame(const TimeSlice& slice, double durationUs) override {
-        const auto bpp = bytesPerPoint();
-        if (bpp == 0 || slice.dataChunk.size() < bpp) {
-            return 0;
+    const ingest::TargetInfo& targetInfo() const override {
+        return info_;
+    }
+
+    void submitContinuous(ingest::SliceSubmission submission) override {
+        const std::size_t pointCount = submission.points.size();
+        if (pointCount == 0) {
+            return;
         }
 
-        const std::size_t pointCount = slice.dataChunk.size() / bpp;
-        const unsigned commandedPointRate = inferCommandedPointRate(slice, pointCount, durationUs);
         receivedSlices_.fetch_add(1, std::memory_order_relaxed);
         receivedPoints_.fetch_add(pointCount, std::memory_order_relaxed);
-        const auto* points = reinterpret_cast<const ISPDB25Point*>(slice.dataChunk.data());
         const auto downstreamBuffer = downstreamBufferSnapshot();
-
-        std::vector<LaserPoint> translated;
-        translated.reserve(pointCount);
-        for (std::size_t i = 0; i < pointCount; ++i) {
-            translated.push_back(toLaserPoint(points[i]));
-        }
         const std::size_t litCount = std::count_if(
-            translated.begin(), translated.end(),
+            submission.points.begin(), submission.points.end(),
             [](const LaserPoint& p) {
                 return p.i > 0.0f && (p.r > 0.0f || p.g > 0.0f || p.b > 0.0f);
             });
@@ -226,8 +246,8 @@ public:
             std::lock_guard<std::mutex> lock(queueMutex_);
             hasSeenInput_ = true;
             lastInputAt_ = std::chrono::steady_clock::now();
-            for (auto& p : translated) {
-                pendingPoints_.push_back(p);
+            for (auto& point : submission.points) {
+                pendingPoints_.push_back(point);
             }
             std::size_t dropCount = 0;
             while (!pendingPoints_.empty() &&
@@ -240,13 +260,12 @@ public:
             }
         }
 
-        maybeUpdatePointRate(commandedPointRate);
-        return 0;
+        maybeUpdatePointRate(submission.effectivePointRate.value_or(
+            inferCommandedPointRate(pointCount, static_cast<double>(submission.durationUs))));
     }
 
-    void replaceFrameBuffer(const SliceBuf& buffer, bool clearControllerPrefetch = false) {
-        const auto bpp = bytesPerPoint();
-        if (bpp == 0 || buffer.empty()) {
+    void replaceFrame(ingest::FrameSubmission submission) override {
+        if (submission.slices.empty()) {
             return;
         }
 
@@ -256,29 +275,21 @@ public:
         std::size_t validSliceCount = 0;
         std::uint64_t totalDurationUs = 0;
 
-        for (const auto& slice : buffer) {
-            if (!slice || slice->dataChunk.size() < bpp) {
-                continue;
-            }
-
-            const std::size_t pointCount = slice->dataChunk.size() / bpp;
-            if (pointCount == 0) {
+        for (const auto& slice : submission.slices) {
+            if (slice.points.empty()) {
                 continue;
             }
 
             ++validSliceCount;
-            totalPointCount += pointCount;
-            totalDurationUs += slice->durationUs;
+            totalPointCount += slice.points.size();
+            totalDurationUs += slice.durationUs;
 
-            const auto* points =
-                reinterpret_cast<const ISPDB25Point*>(slice->dataChunk.data());
-            for (std::size_t i = 0; i < pointCount; ++i) {
-                const LaserPoint translated = toLaserPoint(points[i]);
-                if (translated.i > 0.0f &&
-                    (translated.r > 0.0f || translated.g > 0.0f || translated.b > 0.0f)) {
+            for (const auto& point : slice.points) {
+                if (point.i > 0.0f &&
+                    (point.r > 0.0f || point.g > 0.0f || point.b > 0.0f)) {
                     ++totalLitCount;
                 }
-                replacementPoints.push_back(translated);
+                replacementPoints.push_back(point);
             }
         }
 
@@ -310,45 +321,30 @@ public:
 
         maybeUpdatePointRate(
             inferCommandedPointRate(totalPointCount, static_cast<double>(totalDurationUs)));
-        if (clearControllerPrefetch && controller_) {
+        if (submission.clearTransportPrefetch && controller_) {
             controller_->clearPointCallbackPrefetch();
         }
     }
 
-    SliceType convertPoints(const std::vector<ISPDB25Point>& points) override {
-        SliceType bytes(points.size() * sizeof(ISPDB25Point));
-        if (!bytes.empty()) {
-            std::memcpy(bytes.data(), points.data(), bytes.size());
+    void reset() override {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            pendingPoints_.clear();
+            hasSeenInput_ = false;
+            haveLastOutputPoint_ = false;
+            lastInputAt_ = {};
         }
-        return bytes;
-    }
-
-    unsigned bytesPerPoint() override {
-        return static_cast<unsigned>(sizeof(ISPDB25Point));
-    }
-
-    unsigned maxBytesPerTransmission() override {
-        return static_cast<unsigned>(4096 * sizeof(ISPDB25Point));
-    }
-
-    unsigned maxPointrate() override {
-        return maxPointRateValue_;
-    }
-
-    void setMaxPointrate(unsigned rate) override {
-        maxPointRateValue_ = std::max<unsigned>(rate, 1000);
-        const auto currentRate = currentPointRate_.load(std::memory_order_relaxed);
-        if (currentRate > maxPointRateValue_) {
-            currentPointRate_.store(maxPointRateValue_, std::memory_order_relaxed);
-            controller_->setPointRate(maxPointRateValue_);
+        buffering_.store(true, std::memory_order_relaxed);
+        commandedInputPps_.store(
+            currentPointRate_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        lastObservedDownstreamBufferedPoints_.store(0, std::memory_order_relaxed);
+        lastObservedDownstreamPrefetchedPoints_.store(0, std::memory_order_relaxed);
+        lastObservedDownstreamTransportBufferedPoints_.store(0, std::memory_order_relaxed);
+        lastObservedDownstreamBufferValid_.store(false, std::memory_order_relaxed);
+        if (controller_) {
+            controller_->clearPointCallbackPrefetch();
         }
-    }
-
-    void getName(char* nameBufferPtr, unsigned nameBufferSize) override {
-        if (nameBufferPtr == nullptr || nameBufferSize == 0) {
-            return;
-        }
-        std::snprintf(nameBufferPtr, nameBufferSize, "%s", displayName_.c_str());
     }
 
     StatsSnapshot getStatsSnapshot() const {
@@ -385,34 +381,98 @@ public:
         return isAwaitingInputLocked(std::chrono::steady_clock::now(), idleThreshold);
     }
 
-    void getRealtimeStatus(IDNRealtimeStatus& status) const override {
-        const auto downstreamBuffer = downstreamBufferSnapshot();
-
-        std::size_t localQueuedPoints = 0;
-        {
-            std::lock_guard<std::mutex> lock(queueMutex_);
-            localQueuedPoints = pendingPoints_.size();
+    EndpointSnapshot snapshot(std::string_view ingesterId,
+                              std::string_view ingesterDisplayName,
+                              const ingest::BindingInfo* binding) const {
+        EndpointSnapshot snapshot;
+        snapshot.label = info_.label;
+        snapshot.id = info_.id;
+        snapshot.type = info_.type;
+        snapshot.ingesterId = std::string(ingesterId);
+        snapshot.ingesterDisplayName = std::string(ingesterDisplayName);
+        if (binding != nullptr) {
+            snapshot.bindingLabel = binding->label;
+            snapshot.bindingValue = binding->value;
         }
 
-        const auto pointRate = std::max<std::uint32_t>(
-            1u, currentPointRate_.load(std::memory_order_relaxed));
-        const auto queuedInputLatencyUs = getQueuedInputDurationUs();
-        const auto bufferedPointCount =
-            static_cast<std::uint64_t>(localQueuedPoints + downstreamBuffer.pointsInBuffer);
-        const auto bufferedPointLatencyUs =
-            (bufferedPointCount * 1000000ull) / static_cast<std::uint64_t>(pointRate);
-        const auto totalLatencyUs = queuedInputLatencyUs + bufferedPointLatencyUs;
+        const auto stats = getStatsSnapshot();
+        snapshot.stats.receivedSlices = stats.receivedSlices;
+        snapshot.stats.receivedPoints = stats.receivedPoints;
+        snapshot.stats.receivedLitPoints = stats.receivedLitPoints;
+        snapshot.stats.callbackCalls = stats.callbackCalls;
+        snapshot.stats.callbackUnderrunEvents = stats.callbackUnderrunEvents;
+        snapshot.stats.callbackUnderrunPoints = stats.callbackUnderrunPoints;
+        snapshot.stats.emittedPoints = stats.emittedPoints;
+        snapshot.stats.blankFillPoints = stats.blankFillPoints;
+        snapshot.stats.droppedPoints = stats.droppedPoints;
+        snapshot.stats.queuedPoints = stats.queuedPoints;
+        snapshot.stats.controllerPrefetchedPoints = stats.controllerPrefetchedPoints;
+        snapshot.stats.controllerTransportBufferedPoints =
+            stats.controllerTransportBufferedPoints;
+        snapshot.stats.controllerBufferedPoints = stats.controllerBufferedPoints;
+        snapshot.stats.totalBufferedPoints = stats.totalBufferedPoints;
+        snapshot.stats.outputPointRate = stats.outputPointRate;
+        snapshot.stats.observedInputPointRate = stats.observedInputPointRate;
+        snapshot.stats.latencyMs = stats.latencyMs;
+        snapshot.stats.targetBufferedPoints = stats.targetBufferedPoints;
+        snapshot.stats.buffering = stats.buffering;
+        return snapshot;
+    }
 
-        status.sessionHasMessages =
-            (getQueuedInputMessageCount() > 0) || (localQueuedPoints > 0);
-        status.devicesOccupyBuffers =
-            downstreamBuffer.valid && (downstreamBuffer.pointsInBuffer > 0);
-        if (totalLatencyUs > 0) {
-            status.latencyValid = true;
-            status.latencyUS = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                totalLatencyUs,
-                static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())));
+    void logStatsIfDue() {
+        if (!logger_) {
+            return;
         }
+
+        const auto now = std::chrono::steady_clock::now();
+        if ((now - lastStatsLog_) < 1s) {
+            return;
+        }
+        lastStatsLog_ = now;
+
+        const auto stats = getStatsSnapshot();
+        const bool awaitingInput = isAwaitingInput();
+        const auto deltaRxPts = stats.receivedPoints - lastStats_.receivedPoints;
+        const auto deltaRxLitPts = stats.receivedLitPoints - lastStats_.receivedLitPoints;
+        const auto deltaRxSlices = stats.receivedSlices - lastStats_.receivedSlices;
+        const auto deltaCb = stats.callbackCalls - lastStats_.callbackCalls;
+        const auto deltaUnderrunCb =
+            stats.callbackUnderrunEvents - lastStats_.callbackUnderrunEvents;
+        const auto deltaUnderrunPts =
+            stats.callbackUnderrunPoints - lastStats_.callbackUnderrunPoints;
+        const auto deltaOutPts = stats.emittedPoints - lastStats_.emittedPoints;
+        const auto deltaBlank = stats.blankFillPoints - lastStats_.blankFillPoints;
+        const auto deltaDropped = stats.droppedPoints - lastStats_.droppedPoints;
+
+        if (awaitingInput && deltaRxSlices == 0 && deltaRxPts == 0 && deltaRxLitPts == 0) {
+            lastStats_ = stats;
+            return;
+        }
+
+        std::ostringstream oss;
+        oss << "[bridge:" << info_.label << "]"
+            << " rx_slices/s=" << deltaRxSlices
+            << " rx_pts/s=" << deltaRxPts
+            << " rx_lit_pts/s=" << deltaRxLitPts
+            << " cb/s=" << deltaCb
+            << " und_cb/s=" << deltaUnderrunCb
+            << " und_pts/s=" << deltaUnderrunPts
+            << " out_pts/s=" << deltaOutPts
+            << " pps=" << stats.outputPointRate
+            << " in_pps=" << stats.observedInputPointRate
+            << " lat_ms=" << stats.latencyMs
+            << " lat_pts=" << stats.targetBufferedPoints
+            << " buffering=" << (stats.buffering ? 1 : 0)
+            << " queue_local=" << stats.queuedPoints
+            << " queue_prefetch=" << stats.controllerPrefetchedPoints
+            << " queue_transport=" << stats.controllerTransportBufferedPoints
+            << " queue_controller=" << stats.controllerBufferedPoints
+            << " queue_total=" << stats.totalBufferedPoints
+            << " blank/s=" << deltaBlank
+            << " drop/s=" << deltaDropped;
+        logger_->info(oss.str());
+
+        lastStats_ = stats;
     }
 
 private:
@@ -425,37 +485,22 @@ private:
 
     static unsigned inferCommandedPointRate(std::size_t pointCount,
                                             double durationUs) {
-        if (pointCount == 0) {
-            return 0;
-        }
-
-        double effectiveDurationUs = durationUs;
-        if (effectiveDurationUs <= 0.0) {
+        if (pointCount == 0 || durationUs <= 0.0) {
             return 0;
         }
 
         const double inferredRate =
-            (1000000.0 * static_cast<double>(pointCount)) / effectiveDurationUs;
+            (1000000.0 * static_cast<double>(pointCount)) / durationUs;
         if (!std::isfinite(inferredRate) || inferredRate <= 0.0) {
             return 0;
         }
         return static_cast<unsigned>(std::llround(inferredRate));
     }
 
-    static unsigned inferCommandedPointRate(const TimeSlice& slice,
-                                            std::size_t pointCount,
-                                            double durationUs) {
-        double effectiveDurationUs = durationUs;
-        if (effectiveDurationUs <= 0.0) {
-            effectiveDurationUs = static_cast<double>(slice.durationUs);
-        }
-        return inferCommandedPointRate(pointCount, effectiveDurationUs);
-    }
-
     std::size_t targetBufferedPoints() const {
         const double latencyMs = static_cast<double>(latencyMs_.load(std::memory_order_relaxed));
-        const double rawPoints = (
-            static_cast<double>(currentPointRate_.load(std::memory_order_relaxed)) * latencyMs) /
+        const double rawPoints =
+            (static_cast<double>(currentPointRate_.load(std::memory_order_relaxed)) * latencyMs) /
             1000.0;
         const std::size_t minPoints = 1000;
         const std::size_t maxPoints = std::max<std::size_t>(minPoints, maxQueuedPoints_ - 1);
@@ -463,41 +508,6 @@ private:
             static_cast<std::size_t>(std::llround(rawPoints)),
             minPoints,
             maxPoints);
-    }
-
-    static float unitFromU16(std::uint16_t value) {
-        return static_cast<float>(value) / 65535.0f;
-    }
-
-    static float signedUnitFromU16(std::uint16_t value) {
-        return unitFromU16(value) * 2.0f - 1.0f;
-    }
-
-    static LaserPoint toLaserPoint(const ISPDB25Point& in) {
-        LaserPoint out{};
-        out.x = std::clamp(signedUnitFromU16(in.x), -1.0f, 1.0f);
-        out.y = std::clamp(signedUnitFromU16(in.y), -1.0f, 1.0f);
-
-        out.r = std::clamp(unitFromU16(in.r), 0.0f, 1.0f);
-        out.g = std::clamp(unitFromU16(in.g), 0.0f, 1.0f);
-        out.b = std::clamp(unitFromU16(in.b), 0.0f, 1.0f);
-        out.i = std::clamp(unitFromU16(in.intensity), 0.0f, 1.0f);
-
-        const float rgbMax = std::max(out.r, std::max(out.g, out.b));
-        if (out.i <= 0.0f && rgbMax > 0.0f) {
-            out.i = rgbMax;
-        }
-
-        if (out.i <= 0.0f) {
-            out.r = 0.0f;
-            out.g = 0.0f;
-            out.b = 0.0f;
-            out.i = 0.0f;
-        }
-
-        out.u1 = std::clamp(unitFromU16(in.u1), 0.0f, 1.0f);
-        out.u2 = std::clamp(unitFromU16(in.u2), 0.0f, 1.0f);
-        return out;
     }
 
     DownstreamBufferSnapshot downstreamBufferSnapshot(bool allowControllerQuery = true) const {
@@ -552,10 +562,6 @@ private:
         }
 
         callbackCalls_.fetch_add(1, std::memory_order_relaxed);
-        // This callback runs from the controller's frame-extraction path.
-        // Re-entering controller_->getBufferState() here can deadlock on the
-        // framer mutex, so use the last safe snapshot gathered from non-callback
-        // threads instead of querying the controller synchronously.
         const auto downstreamBuffer = downstreamBufferSnapshot(false);
         std::lock_guard<std::mutex> lock(queueMutex_);
         const std::size_t availableAtStart = pendingPoints_.size();
@@ -579,7 +585,8 @@ private:
         }
         buffering_.store(false, std::memory_order_relaxed);
 
-        const std::size_t toWrite = std::min<std::size_t>(req.maximumPointsRequired, pendingPoints_.size());
+        const std::size_t toWrite =
+            std::min<std::size_t>(req.maximumPointsRequired, pendingPoints_.size());
         for (std::size_t i = 0; i < toWrite; ++i) {
             out.push_back(pendingPoints_.front());
             pendingPoints_.pop_front();
@@ -622,11 +629,7 @@ private:
     void maybeIncreaseLatencyOnUnderrun(std::size_t missingPoints,
                                         std::size_t minimumPointsRequired,
                                         std::size_t targetPoints) {
-        if (!autoLatency_) {
-            return;
-        }
-
-        if (minimumPointsRequired == 0) {
+        if (!autoLatency_ || minimumPointsRequired == 0) {
             return;
         }
 
@@ -662,7 +665,7 @@ private:
 
         if (after != before && logger_) {
             std::ostringstream oss;
-            oss << "[bridge:" << displayName_ << "] auto-latency "
+            oss << "[bridge:" << info_.label << "] auto-latency "
                 << before << "ms -> " << after << "ms";
             logger_->info(oss.str());
         }
@@ -689,7 +692,7 @@ private:
         }
 
         std::ostringstream oss;
-        oss << "[bridge:" << displayName_ << "] underrun"
+        oss << "[bridge:" << info_.label << "] underrun"
             << " need_min=" << req.minimumPointsRequired
             << " need_max=" << req.maximumPointsRequired
             << " queue_local=" << available
@@ -717,7 +720,8 @@ private:
         if (commandedPointRate == 0) {
             return;
         }
-        const std::uint32_t proposed = std::clamp<std::uint32_t>(commandedPointRate, 1000u, maxPointRateValue_);
+        const std::uint32_t proposed =
+            std::clamp<std::uint32_t>(commandedPointRate, 1000u, maxPointRateValue_);
         commandedInputPps_.store(proposed, std::memory_order_relaxed);
         if (proposed == currentPointRate_.load(std::memory_order_relaxed)) {
             return;
@@ -727,7 +731,7 @@ private:
     }
 
     std::shared_ptr<libera::core::LaserController> controller_;
-    std::string displayName_;
+    ingest::TargetInfo info_;
     unsigned maxPointRateValue_;
     std::size_t maxQueuedPoints_;
     std::atomic<std::uint32_t> currentPointRate_{30000};
@@ -760,253 +764,8 @@ private:
     mutable std::atomic<std::size_t> lastObservedDownstreamPrefetchedPoints_{0};
     mutable std::atomic<std::size_t> lastObservedDownstreamTransportBufferedPoints_{0};
     mutable std::atomic<bool> lastObservedDownstreamBufferValid_{false};
-};
-
-class LiberaLinkEndpoint {
-public:
-    LiberaLinkEndpoint(std::shared_ptr<libera::core::LaserController> controller,
-                       std::string dacLabel,
-                       std::string dacId,
-                       std::string dacType,
-                       unsigned maxPps,
-                       std::uint32_t sliceDurationUs,
-                       std::size_t maxQueuedPoints,
-                       std::uint32_t latencyMs,
-                       std::uint32_t maxLatencyMs,
-                       bool autoLatency,
-                       std::uint8_t serviceId,
-                       LogSink logger)
-        : label_(std::move(dacLabel))
-        , id_(std::move(dacId))
-        , type_(std::move(dacType))
-        , serviceId_(serviceId)
-        , sliceDurationUs_(sliceDurationUs)
-        , logger_(std::move(logger))
-        , adapter_(std::make_shared<LiberaDacAdapter>(
-              std::move(controller),
-              label_,
-              maxPps,
-              maxQueuedPoints,
-              latencyMs,
-              maxLatencyMs,
-              autoLatency,
-              logger_))
-        , output_(std::make_unique<V1LaproGraphicOutput>(adapter_)) {
-        const std::string bridgedServiceName = std::string("Libera Link ") + label_;
-        std::vector<char> serviceName(bridgedServiceName.begin(), bridgedServiceName.end());
-        serviceName.push_back('\0');
-        const bool isDefault = (serviceId_ == 1);
-        service_ = std::make_unique<IDNLaproService>(serviceId_, serviceName.data(), isDefault, output_.get());
-    }
-
-    ~LiberaLinkEndpoint() {
-        stop();
-    }
-
-    void start() {
-        if (running_.exchange(true)) {
-            return;
-        }
-        driverThread_ = std::thread([this] { driverLoop(); });
-    }
-
-    void stop() {
-        if (!running_.exchange(false)) {
-            return;
-        }
-        if (driverThread_.joinable()) {
-            driverThread_.join();
-        }
-    }
-
-    void linkService(LLNode<ServiceNode>** firstService) {
-        if (!service_ || !firstService) {
-            return;
-        }
-        service_->linkinLast(firstService);
-    }
-
-    const std::string& label() const { return label_; }
-    const std::string& id() const { return id_; }
-    const std::string& type() const { return type_; }
-    std::uint8_t serviceId() const { return serviceId_; }
-
-    EndpointSnapshot snapshot() const {
-        EndpointSnapshot snapshot;
-        snapshot.label = label_;
-        snapshot.id = id_;
-        snapshot.type = type_;
-        snapshot.serviceId = serviceId_;
-
-        const auto stats = adapter_->getStatsSnapshot();
-        snapshot.stats.receivedSlices = stats.receivedSlices;
-        snapshot.stats.receivedPoints = stats.receivedPoints;
-        snapshot.stats.receivedLitPoints = stats.receivedLitPoints;
-        snapshot.stats.callbackCalls = stats.callbackCalls;
-        snapshot.stats.callbackUnderrunEvents = stats.callbackUnderrunEvents;
-        snapshot.stats.callbackUnderrunPoints = stats.callbackUnderrunPoints;
-        snapshot.stats.emittedPoints = stats.emittedPoints;
-        snapshot.stats.blankFillPoints = stats.blankFillPoints;
-        snapshot.stats.droppedPoints = stats.droppedPoints;
-        snapshot.stats.queuedPoints = stats.queuedPoints;
-        snapshot.stats.controllerPrefetchedPoints = stats.controllerPrefetchedPoints;
-        snapshot.stats.controllerTransportBufferedPoints =
-            stats.controllerTransportBufferedPoints;
-        snapshot.stats.controllerBufferedPoints = stats.controllerBufferedPoints;
-        snapshot.stats.totalBufferedPoints = stats.totalBufferedPoints;
-        snapshot.stats.outputPointRate = stats.outputPointRate;
-        snapshot.stats.observedInputPointRate = stats.observedInputPointRate;
-        snapshot.stats.latencyMs = stats.latencyMs;
-        snapshot.stats.targetBufferedPoints = stats.targetBufferedPoints;
-        snapshot.stats.buffering = stats.buffering;
-        return snapshot;
-    }
-
-    void logStatsIfDue() {
-        if (!logger_) {
-            return;
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        if ((now - lastStatsLog_) < 1s) {
-            return;
-        }
-        lastStatsLog_ = now;
-
-        const auto stats = adapter_->getStatsSnapshot();
-        const bool awaitingInput = adapter_->isAwaitingInput();
-        const auto deltaRxPts = stats.receivedPoints - lastStats_.receivedPoints;
-        const auto deltaRxLitPts = stats.receivedLitPoints - lastStats_.receivedLitPoints;
-        const auto deltaRxSlices = stats.receivedSlices - lastStats_.receivedSlices;
-        const auto deltaCb = stats.callbackCalls - lastStats_.callbackCalls;
-        const auto deltaUnderrunCb = stats.callbackUnderrunEvents - lastStats_.callbackUnderrunEvents;
-        const auto deltaUnderrunPts = stats.callbackUnderrunPoints - lastStats_.callbackUnderrunPoints;
-        const auto deltaOutPts = stats.emittedPoints - lastStats_.emittedPoints;
-        const auto deltaBlank = stats.blankFillPoints - lastStats_.blankFillPoints;
-        const auto deltaDropped = stats.droppedPoints - lastStats_.droppedPoints;
-
-        if (awaitingInput && deltaRxSlices == 0 && deltaRxPts == 0 && deltaRxLitPts == 0) {
-            lastStats_ = stats;
-            return;
-        }
-
-        std::ostringstream oss;
-        oss << "[bridge:" << label_ << "]"
-            << " rx_slices/s=" << deltaRxSlices
-            << " rx_pts/s=" << deltaRxPts
-            << " rx_lit_pts/s=" << deltaRxLitPts
-            << " cb/s=" << deltaCb
-            << " und_cb/s=" << deltaUnderrunCb
-            << " und_pts/s=" << deltaUnderrunPts
-            << " out_pts/s=" << deltaOutPts
-            << " pps=" << stats.outputPointRate
-            << " in_pps=" << stats.observedInputPointRate
-            << " lat_ms=" << stats.latencyMs
-            << " lat_pts=" << stats.targetBufferedPoints
-            << " buffering=" << (stats.buffering ? 1 : 0)
-            << " queue_local=" << stats.queuedPoints
-            << " queue_prefetch=" << stats.controllerPrefetchedPoints
-            << " queue_transport=" << stats.controllerTransportBufferedPoints
-            << " queue_controller=" << stats.controllerBufferedPoints
-            << " queue_total=" << stats.totalBufferedPoints
-            << " blank/s=" << deltaBlank
-            << " drop/s=" << deltaDropped;
-        logger_->info(oss.str());
-
-        lastStats_ = stats;
-    }
-
-private:
-    static std::chrono::microseconds bufferReplayInterval(const SliceBuf& buffer) {
-        auto total = 0us;
-        for (const auto& slice : buffer) {
-            if (!slice) {
-                continue;
-            }
-            total += std::chrono::microseconds(slice->durationUs);
-        }
-        return total;
-    }
-
-    void driverLoop() {
-        TransformEnv tfEnv;
-        tfEnv.usPerSlice = static_cast<double>(sliceDurationUs_);
-        tfEnv.currentSliceTime = tfEnv.usPerSlice;
-
-        unsigned driverMode = DRIVER_INACTIVE;
-        auto currentBuffer = std::make_shared<SliceBuf>();
-        auto nextFrameReplayAt = std::chrono::steady_clock::time_point{};
-
-        while (running_.load(std::memory_order_relaxed)) {
-            bool hasFreshFrameInput = false;
-            auto nextBuffer = adapter_->getNextBuffer(tfEnv, driverMode);
-            if (nextBuffer && !nextBuffer->empty()) {
-                currentBuffer = nextBuffer;
-                if (driverMode == DRIVER_FRAMEMODE) {
-                    nextFrameReplayAt = std::chrono::steady_clock::now();
-                    hasFreshFrameInput = true;
-                }
-            }
-
-            if (!currentBuffer || currentBuffer->empty()) {
-                std::this_thread::sleep_for(1ms);
-                continue;
-            }
-
-            if (driverMode == DRIVER_FRAMEMODE &&
-                nextFrameReplayAt != std::chrono::steady_clock::time_point{}) {
-                const auto now = std::chrono::steady_clock::now();
-                if (now < nextFrameReplayAt) {
-                    const auto sleepFor = std::min(
-                        1ms,
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            nextFrameReplayAt - now));
-                    if (sleepFor > 0ms) {
-                        std::this_thread::sleep_for(sleepFor);
-                    }
-                    continue;
-                }
-            }
-
-            if (driverMode == DRIVER_FRAMEMODE) {
-                adapter_->replaceFrameBuffer(*currentBuffer, hasFreshFrameInput);
-                auto replayInterval = bufferReplayInterval(*currentBuffer);
-                if (replayInterval <= 0us) {
-                    replayInterval = 1ms;
-                }
-                nextFrameReplayAt = std::chrono::steady_clock::now() + replayInterval;
-                continue;
-            }
-
-            const std::size_t iterationCount = currentBuffer->size();
-            for (std::size_t i = 0; i < iterationCount && running_.load(std::memory_order_relaxed); ++i) {
-                auto nextSlice = currentBuffer->front();
-                currentBuffer->pop_front();
-
-                if (!nextSlice) {
-                    continue;
-                }
-
-                adapter_->writeFrame(*nextSlice, static_cast<double>(nextSlice->durationUs));
-            }
-            nextFrameReplayAt = std::chrono::steady_clock::time_point{};
-        }
-    }
-
-    std::string label_;
-    std::string id_;
-    std::string type_;
-    std::uint8_t serviceId_;
-    std::uint32_t sliceDurationUs_;
-    LogSink logger_;
-
-    std::shared_ptr<LiberaDacAdapter> adapter_;
-    std::unique_ptr<V1LaproGraphicOutput> output_;
-    std::unique_ptr<IDNLaproService> service_;
-    std::thread driverThread_;
-    std::atomic<bool> running_{false};
     std::chrono::steady_clock::time_point lastStatsLog_{};
-    LiberaDacAdapter::StatsSnapshot lastStats_{};
+    StatsSnapshot lastStats_{};
 };
 
 std::vector<std::unique_ptr<libera::core::ControllerInfo>> discoverControllers(
@@ -1097,11 +856,15 @@ std::vector<DiscoveredControllerSnapshot> buildDiscoveredControllerSnapshots(
     return snapshots;
 }
 
-void stopStartedEndpoints(std::vector<std::unique_ptr<LiberaLinkEndpoint>>& endpoints) {
-    for (auto& endpoint : endpoints) {
-        endpoint->stop();
+const ingest::BindingInfo* bindingForTarget(
+    const std::vector<ingest::BindingInfo>& bindings,
+    const std::string& targetId) {
+    for (const auto& binding : bindings) {
+        if (binding.targetId == targetId) {
+            return &binding;
+        }
     }
-    endpoints.clear();
+    return nullptr;
 }
 
 } // namespace
@@ -1115,10 +878,12 @@ struct BridgeRuntime::Impl {
     std::vector<DiscoveredControllerSnapshot> discovered;
 
     std::unique_ptr<libera::System> liberaSystem;
-    std::unique_ptr<SockIDNServer> server;
-    std::thread serverThread;
+    std::unique_ptr<ingest::Ingester> ingester;
     std::thread monitorThread;
-    std::vector<std::unique_ptr<LiberaLinkEndpoint>> endpoints;
+    std::vector<std::shared_ptr<LiberaTarget>> targets;
+    std::vector<ingest::BindingInfo> bindings;
+    std::string activeIngesterId;
+    std::string activeIngesterDisplayName;
 
     std::atomic<bool> stopRequested{false};
     LogSink logger = std::make_shared<RuntimeLogger>();
@@ -1135,6 +900,7 @@ void printUsage(const char* exe) {
 }
 
 ParseResult parseOptions(int argc, char** argv, BridgeOptions& options) {
+    ingest::ensureBuiltInIdnIngesterLinked();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help") {
@@ -1151,6 +917,25 @@ ParseResult parseOptions(int argc, char** argv, BridgeOptions& options) {
             return ParseResult::Error;
         }
 
+        if (arg == "--ingester") {
+            options.ingesterId = argv[i + 1];
+            ++i;
+            continue;
+        }
+
+        if (arg == "--ingester-opt") {
+            std::string key;
+            std::string value;
+            if (!parseKeyValue(argv[i + 1], key, value)) {
+                std::cerr << "Invalid ingester option for " << arg
+                          << ": expected key=value, got " << argv[i + 1] << "\n";
+                return ParseResult::Error;
+            }
+            options.ingesterOptions[key] = value;
+            ++i;
+            continue;
+        }
+
         std::uint64_t raw = 0;
         if (!parseUnsigned(argv[i + 1], raw)) {
             std::cerr << "Invalid numeric value for " << arg << ": " << argv[i + 1] << "\n";
@@ -1163,13 +948,17 @@ ParseResult parseOptions(int argc, char** argv, BridgeOptions& options) {
         } else if (arg == "--max-dacs") {
             options.maxDacs = static_cast<std::size_t>(raw);
         } else if (arg == "--slice-us") {
-            options.sliceDurationUs = static_cast<std::uint32_t>(std::max<std::uint64_t>(raw, 1000));
+            options.sliceDurationUs =
+                static_cast<std::uint32_t>(std::max<std::uint64_t>(raw, 1000));
         } else if (arg == "--max-queue-points") {
-            options.maxQueuedPoints = static_cast<std::size_t>(std::max<std::uint64_t>(raw, 1000));
+            options.maxQueuedPoints =
+                static_cast<std::size_t>(std::max<std::uint64_t>(raw, 1000));
         } else if (arg == "--latency-ms") {
-            options.latencyMs = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(raw, 0, 10000));
+            options.latencyMs =
+                static_cast<std::uint32_t>(std::clamp<std::uint64_t>(raw, 0, 10000));
         } else if (arg == "--max-latency-ms") {
-            options.maxLatencyMs = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(raw, 0, 30000));
+            options.maxLatencyMs =
+                static_cast<std::uint32_t>(std::clamp<std::uint64_t>(raw, 0, 30000));
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             printUsage(argv[0]);
@@ -1180,6 +969,12 @@ ParseResult parseOptions(int argc, char** argv, BridgeOptions& options) {
 
     if (options.maxLatencyMs < options.latencyMs) {
         options.maxLatencyMs = options.latencyMs;
+    }
+
+    if (!options.ingesterId.empty() && !ingest::findIngester(options.ingesterId)) {
+        std::cerr << "Unknown ingester: " << options.ingesterId << "\n";
+        printUsage(argv[0]);
+        return ParseResult::Error;
     }
 
     return ParseResult::Ok;
@@ -1241,7 +1036,8 @@ bool BridgeRuntime::scan(const BridgeOptions& options) {
         impl_->liberaSystem = std::make_unique<libera::System>();
     }
     auto* liberaSystem = impl_->liberaSystem.get();
-    auto discovered = discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
+    auto discovered =
+        discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
     auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
@@ -1279,6 +1075,13 @@ bool BridgeRuntime::start(const BridgeOptions& options) {
 
 bool BridgeRuntime::start(const BridgeOptions& options,
                           const std::set<std::string>& selectedControllerIds) {
+    const auto selectedIngesterInfo = [&]() -> std::optional<ingest::RegistrationInfo> {
+        if (!options.ingesterId.empty()) {
+            return ingest::findIngester(options.ingesterId);
+        }
+        return ingest::defaultIngester();
+    }();
+
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (impl_->state == RuntimeState::Scanning ||
@@ -1289,24 +1092,33 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         }
         impl_->state = RuntimeState::Starting;
         impl_->statusMessage = "Discovering controllers...";
+        impl_->activeIngesterId.clear();
+        impl_->activeIngesterDisplayName.clear();
     }
 
     impl_->logger->clear();
     impl_->stopRequested.store(false, std::memory_order_relaxed);
 
-    // The bridge adapter already owns end-to-end latency/buffering. Disable
-    // Libera's additional global point-callback latency target so frame-based
-    // transports such as Helios do not build an extra ~100ms virtual backlog
-    // on top of the bridge queue.
+    if (!selectedIngesterInfo) {
+        const std::string error = options.ingesterId.empty()
+                                      ? "No ingesters are registered."
+                                      : "Unknown ingester \"" + options.ingesterId + "\".";
+        impl_->setState(RuntimeState::Failed, error);
+        impl_->logger->error(error);
+        return false;
+    }
+
     libera::core::LaserController::setTargetLatency(std::chrono::milliseconds(0));
     libera::core::LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(0));
 
     if (selectedControllerIds.empty()) {
-        impl_->logger->info("Starting Libera Link");
+        std::ostringstream oss;
+        oss << "Starting Libera Link via " << selectedIngesterInfo->displayName;
+        impl_->logger->info(oss.str());
     } else {
         std::ostringstream oss;
-        oss << "Starting Libera Link for " << selectedControllerIds.size()
-            << " selected controller(s)";
+        oss << "Starting Libera Link via " << selectedIngesterInfo->displayName
+            << " for " << selectedControllerIds.size() << " selected controller(s)";
         impl_->logger->info(oss.str());
     }
 
@@ -1314,7 +1126,8 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         impl_->liberaSystem = std::make_unique<libera::System>();
     }
     auto* liberaSystem = impl_->liberaSystem.get();
-    auto discovered = discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
+    auto discovered =
+        discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
     auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
@@ -1350,11 +1163,10 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         impl_->logger->info(oss.str());
     }
 
-    LLNode<ServiceNode>* firstService = nullptr;
-    std::vector<std::unique_ptr<LiberaLinkEndpoint>> endpoints;
-    endpoints.reserve(discovered.size());
+    std::vector<std::shared_ptr<LiberaTarget>> targets;
+    targets.reserve(discovered.size());
 
-    std::size_t startedEndpoints = 0;
+    std::size_t startedTargets = 0;
     for (const auto& info : discovered) {
         if (impl_->stopRequested.load(std::memory_order_relaxed)) {
             break;
@@ -1382,7 +1194,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
             continue;
         }
 
-        if (options.maxDacs > 0 && startedEndpoints >= options.maxDacs) {
+        if (options.maxDacs > 0 && startedTargets >= options.maxDacs) {
             break;
         }
 
@@ -1394,83 +1206,101 @@ bool BridgeRuntime::start(const BridgeOptions& options,
             continue;
         }
 
-        const auto serviceIdRaw = startedEndpoints + 1;
-        if (serviceIdRaw > 255) {
-            std::ostringstream oss;
-            oss << "Service ID range exceeded. Stopping at " << startedEndpoints << " controller(s).";
-            impl_->logger->error(oss.str());
-            break;
-        }
+        ingest::TargetInfo targetInfo;
+        targetInfo.id = info->idValue();
+        targetInfo.label = info->labelValue();
+        targetInfo.type = info->type();
+        targetInfo.maxPointRate = info->maxPointRate();
 
-        auto endpoint = std::make_unique<LiberaLinkEndpoint>(
+        auto target = std::make_shared<LiberaTarget>(
             controller,
-            info->labelValue(),
-            info->idValue(),
-            info->type(),
-            info->maxPointRate(),
-            options.sliceDurationUs,
+            std::move(targetInfo),
             options.maxQueuedPoints,
             options.latencyMs,
             options.maxLatencyMs,
             options.autoLatency,
-            static_cast<std::uint8_t>(serviceIdRaw),
             impl_->logger);
 
-        endpoint->linkService(&firstService);
-        endpoint->start();
-
-        {
-            std::ostringstream oss;
-            oss << "Bridged " << endpoint->label()
-                << " [" << endpoint->type() << ":" << endpoint->id() << "]"
-                << " -> IDN service " << static_cast<unsigned>(endpoint->serviceId());
-            impl_->logger->info(oss.str());
-        }
-
-        endpoints.push_back(std::move(endpoint));
-        ++startedEndpoints;
+        targets.push_back(std::move(target));
+        ++startedTargets;
     }
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
-        stopStartedEndpoints(endpoints);
+        targets.clear();
         impl_->setState(RuntimeState::Stopped, "Stopped");
         impl_->logger->info("Bridge start cancelled.");
         return false;
     }
 
-    if (endpoints.empty()) {
+    if (targets.empty()) {
         const std::string error = selectedControllerIds.empty()
                                       ? "No bridge endpoints started."
                                       : "No selected controllers were started.";
-        stopStartedEndpoints(endpoints);
         impl_->setState(RuntimeState::Failed, error);
         impl_->logger->error(error);
         return false;
     }
 
-    auto server = std::make_unique<SockIDNServer>(firstService);
-    std::thread serverThread([serverPtr = server.get()] { serverPtr->networkThreadFunc(); });
+    ingest::StartContext startContext;
+    startContext.targets.reserve(targets.size());
+    for (const auto& target : targets) {
+        startContext.targets.push_back(ingest::Target{target});
+    }
+
+    ingest::FactoryConfig ingesterConfig;
+    ingesterConfig.sliceDurationUs = options.sliceDurationUs;
+    ingesterConfig.options = options.ingesterOptions;
 
     std::string startupError;
-    if (!server->waitUntilStarted(2000ms, startupError)) {
-        if (startupError.empty()) {
-            startupError = "IDN server failed to start.";
-        }
-        server->stopServer();
-        if (serverThread.joinable()) {
-            serverThread.join();
-        }
-        stopStartedEndpoints(endpoints);
+    auto ingester = ingest::createIngester(selectedIngesterInfo->id, ingesterConfig, startupError);
+    if (!ingester) {
+        targets.clear();
         impl_->setState(RuntimeState::Failed, startupError);
         impl_->logger->error(startupError);
         return false;
     }
 
+    if (!ingester->start(startContext, startupError)) {
+        if (startupError.empty()) {
+            startupError = std::string(selectedIngesterInfo->displayName) +
+                " ingester failed to start.";
+        }
+        targets.clear();
+        impl_->setState(RuntimeState::Failed, startupError);
+        impl_->logger->error(startupError);
+        return false;
+    }
+
+    if (impl_->stopRequested.load(std::memory_order_relaxed)) {
+        ingester->stop();
+        targets.clear();
+        impl_->setState(RuntimeState::Stopped, "Stopped");
+        impl_->logger->info("Bridge start cancelled.");
+        return false;
+    }
+
+    auto bindings = ingester->bindings();
+    const std::string activeIngesterId = selectedIngesterInfo->id;
+    const std::string activeIngesterDisplayName = std::string(ingester->displayName());
+    for (const auto& target : targets) {
+        const auto* binding = bindingForTarget(bindings, target->targetInfo().id);
+        std::ostringstream oss;
+        oss << "Bridged " << target->targetInfo().label
+            << " [" << target->targetInfo().type << ":" << target->targetInfo().id << "]"
+            << " via " << activeIngesterDisplayName;
+        if (binding != nullptr && !binding->label.empty()) {
+            oss << " -> " << binding->label;
+        }
+        impl_->logger->info(oss.str());
+    }
+
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->server = std::move(server);
-        impl_->serverThread = std::move(serverThread);
-        impl_->endpoints = std::move(endpoints);
+        impl_->ingester = std::move(ingester);
+        impl_->targets = std::move(targets);
+        impl_->bindings = std::move(bindings);
+        impl_->activeIngesterId = activeIngesterId;
+        impl_->activeIngesterDisplayName = activeIngesterDisplayName;
         impl_->state = RuntimeState::Running;
         impl_->statusMessage = "Running";
     }
@@ -1479,8 +1309,8 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         while (!impl->stopRequested.load(std::memory_order_relaxed)) {
             {
                 std::lock_guard<std::mutex> lock(impl->mutex);
-                for (auto& endpoint : impl->endpoints) {
-                    endpoint->logStatsIfDue();
+                for (auto& target : impl->targets) {
+                    target->logStatsIfDue();
                 }
             }
             std::this_thread::sleep_for(200ms);
@@ -1513,31 +1343,28 @@ void BridgeRuntime::stop() {
         monitorThread.join();
     }
 
-    std::thread serverThread;
-    std::unique_ptr<SockIDNServer> server;
-    std::vector<std::unique_ptr<LiberaLinkEndpoint>> endpoints;
+    std::unique_ptr<ingest::Ingester> ingester;
+    std::vector<std::shared_ptr<LiberaTarget>> targets;
     bool hadActiveResources = false;
 
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        hadActiveResources = impl_->server != nullptr ||
-                             !impl_->endpoints.empty() ||
+        hadActiveResources = impl_->ingester != nullptr ||
+                             !impl_->targets.empty() ||
                              impl_->state != RuntimeState::Stopped;
-        server = std::move(impl_->server);
-        serverThread = std::move(impl_->serverThread);
-        endpoints = std::move(impl_->endpoints);
+        ingester = std::move(impl_->ingester);
+        targets = std::move(impl_->targets);
+        impl_->bindings.clear();
+        impl_->activeIngesterId.clear();
+        impl_->activeIngesterDisplayName.clear();
         impl_->state = RuntimeState::Stopped;
         impl_->statusMessage = "Stopped";
     }
 
-    if (server) {
-        server->stopServer();
+    if (ingester) {
+        ingester->stop();
     }
-    if (serverThread.joinable()) {
-        serverThread.join();
-    }
-
-    stopStartedEndpoints(endpoints);
+    targets.clear();
 
     impl_->stopRequested.store(false, std::memory_order_relaxed);
     if (hadActiveResources) {
@@ -1552,13 +1379,18 @@ RuntimeSnapshot BridgeRuntime::snapshot() const {
         snapshot.state = impl_->state;
         snapshot.statusMessage = impl_->statusMessage;
         snapshot.stopRequested = impl_->stopRequested.load(std::memory_order_relaxed);
+        snapshot.activeIngesterId = impl_->activeIngesterId;
+        snapshot.activeIngesterDisplayName = impl_->activeIngesterDisplayName;
         snapshot.hasDiscoveryResults = impl_->hasDiscoveryResults;
         snapshot.discoveredControllers = impl_->discoveredControllers;
         snapshot.discovered = impl_->discovered;
-        snapshot.startedEndpoints = impl_->endpoints.size();
-        snapshot.endpoints.reserve(impl_->endpoints.size());
-        for (const auto& endpoint : impl_->endpoints) {
-            snapshot.endpoints.push_back(endpoint->snapshot());
+        snapshot.startedEndpoints = impl_->targets.size();
+        snapshot.endpoints.reserve(impl_->targets.size());
+        for (const auto& target : impl_->targets) {
+            snapshot.endpoints.push_back(target->snapshot(
+                impl_->activeIngesterId,
+                impl_->activeIngesterDisplayName,
+                bindingForTarget(impl_->bindings, target->targetInfo().id)));
         }
     }
 

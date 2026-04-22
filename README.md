@@ -46,14 +46,42 @@ Release setup and required GitHub secrets/variables are documented in
 Useful options:
 
 ```bash
-./build/libera_link --idn-port 7255 --discovery-timeout-ms 8000 --max-dacs 4
+./build/libera_link --ingester idn --discovery-timeout-ms 8000 --max-dacs 4
 ```
+
+Pass custom ingester settings through repeated `--ingester-opt key=value` flags.
 
 ## Notes
 
 - Streaming to hardware uses a Libera callback-backed queue.
-- Point data and effective point-rate changes coming from IDN chunks are translated to Libera point streams.
+- The built-in `idn` ingester is registered by default and exposes controllers as OpenIDN / IDN services.
 - Already-IDN Helios network DACs are skipped automatically (only non-IDN DACs are bridged).
+
+## Custom Ingesters
+
+Custom ingesters can be linked into `libera_link_core` by implementing
+`libera_link::ingest::Ingester` and registering a factory:
+
+```cpp
+#include "ingest/IngesterRegistry.hpp"
+
+using namespace libera_link::ingest;
+
+static IngesterRegistrar gCustomIngester({
+    {
+        "custom",
+        "Custom",
+        "Expose Libera Link through a custom ingress protocol.",
+        false,
+    },
+    [](const FactoryConfig& config) -> std::unique_ptr<Ingester> {
+        return std::make_unique<MyCustomIngester>(config);
+    },
+});
+```
+
+Once linked in, the ingester appears in the GUI selector and can be chosen from
+the CLI with `--ingester custom`.
 
 ## Licensing
 

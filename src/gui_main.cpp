@@ -3,6 +3,7 @@
 #include "LiberaPaths.hpp"
 #include "LiberaPluginsWindow.h"
 #include "LiberaWidgets.h"
+#include "ingest/IngesterRegistry.hpp"
 
 #include "fonts/IconsForkAwesome.h"
 #include "imgui.h"
@@ -130,6 +131,10 @@ int main() {
     }
 
     libera_link::BridgeRuntime runtime;
+    libera_link::BridgeOptions bridgeOptions;
+    if (const auto defaultIngester = libera_link::ingest::defaultIngester()) {
+        bridgeOptions.ingesterId = defaultIngester->id;
+    }
 
     std::future<bool> scanFuture;
     std::future<bool> startFuture;
@@ -148,7 +153,7 @@ int main() {
             return;
         }
 
-        const libera_link::BridgeOptions options;
+        const libera_link::BridgeOptions options = bridgeOptions;
         startFuture = std::async(std::launch::async,
                                  [&runtime, options, selectedIds = std::move(selectedIds)] {
                                      return runtime.start(options, selectedIds);
@@ -164,7 +169,7 @@ int main() {
     };
 
     {
-        const libera_link::BridgeOptions options;
+        const libera_link::BridgeOptions options = bridgeOptions;
         scanFuture = std::async(std::launch::async, [&runtime, options] {
             return runtime.scan(options);
         });
@@ -188,6 +193,20 @@ int main() {
         }
 
         const auto snapshot = runtime.snapshot();
+        const auto availableIngesters = libera_link::ingest::availableIngesters();
+        const auto selectedIngesterIt = std::find_if(
+            availableIngesters.begin(), availableIngesters.end(),
+            [&](const libera_link::ingest::RegistrationInfo& info) {
+                return info.id == bridgeOptions.ingesterId;
+            });
+        if (bridgeOptions.ingesterId.empty() || selectedIngesterIt == availableIngesters.end()) {
+            if (const auto defaultIngester = libera_link::ingest::defaultIngester()) {
+                bridgeOptions.ingesterId = defaultIngester->id;
+            } else {
+                bridgeOptions.ingesterId.clear();
+            }
+        }
+
         if (snapshot.hasDiscoveryResults) {
             std::set<std::string> bridgeableControllerIds;
             for (const auto& controller : snapshot.discovered) {
@@ -265,7 +284,7 @@ int main() {
         const bool showTopError = !snapshot.lastError.empty() &&
                                   snapshot.state == libera_link::RuntimeState::Failed;
         const float overviewHeight =
-            (ImGui::GetFrameHeightWithSpacing() * 1.35f) +
+            (ImGui::GetFrameHeightWithSpacing() * 2.45f) +
             (ImGui::GetTextLineHeightWithSpacing() * (showTopError ? 3.1f : 2.35f)) +
             12.0f;
         ImGui::BeginChild("BridgeOverview", ImVec2(0.0f, overviewHeight), true, ImGuiWindowFlags_NoScrollbar);
@@ -291,7 +310,7 @@ int main() {
                     rescanInFlight = true;
                     bridgeSyncPending = false;
                 } else {
-                    const libera_link::BridgeOptions options;
+                    const libera_link::BridgeOptions options = bridgeOptions;
                     scanFuture = std::async(std::launch::async, [&runtime, options] {
                         return runtime.scan(options);
                     });
@@ -311,6 +330,55 @@ int main() {
         ImGui::SameLine();
         if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
             showPluginsWindow = true;
+        }
+
+        ImGui::Spacing();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("Ingester");
+        ImGui::SameLine();
+        if (availableIngesters.empty()) {
+            ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", "None registered");
+        } else {
+            const bool ingesterSelectionDisabled =
+                startInFlight || stopInFlight || scanInFlight || rescanInFlight;
+            if (ingesterSelectionDisabled) {
+                ImGui::BeginDisabled();
+            }
+
+            const auto activeIngesterIt = std::find_if(
+                availableIngesters.begin(), availableIngesters.end(),
+                [&](const libera_link::ingest::RegistrationInfo& info) {
+                    return info.id == bridgeOptions.ingesterId;
+                });
+            const std::string preview = activeIngesterIt != availableIngesters.end()
+                ? activeIngesterIt->displayName
+                : bridgeOptions.ingesterId;
+            if (ImGui::BeginCombo("##ingester", preview.c_str())) {
+                for (const auto& ingester : availableIngesters) {
+                    const bool selected = (ingester.id == bridgeOptions.ingesterId);
+                    if (ImGui::Selectable(ingester.displayName.c_str(), selected)) {
+                        bridgeOptions.ingesterId = ingester.id;
+                        bridgeSyncPending = true;
+                    }
+                    if (!ingester.description.empty() && ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("%s", ingester.description.c_str());
+                    }
+                    if (selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            if (ingesterSelectionDisabled) {
+                ImGui::EndDisabled();
+            }
+
+            if (activeIngesterIt != availableIngesters.end() &&
+                !activeIngesterIt->description.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", activeIngesterIt->description.c_str());
+            }
         }
 
         ImGui::Spacing();
@@ -351,7 +419,7 @@ int main() {
             ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 2.2f);
             ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 120.0f);
             ImGui::TableSetupColumn("Max PPS", ImGuiTableColumnFlags_WidthFixed, 92.0f);
-            ImGui::TableSetupColumn("Service", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+            ImGui::TableSetupColumn("Endpoint", ImGuiTableColumnFlags_WidthFixed, 110.0f);
             ImGui::TableSetupColumn("Rates", ImGuiTableColumnFlags_WidthFixed, 140.0f);
             ImGui::TableSetupColumn("Latency", ImGuiTableColumnFlags_WidthFixed, 90.0f);
             ImGui::TableSetupColumn("Queue", ImGuiTableColumnFlags_WidthFixed, 220.0f);
@@ -420,7 +488,12 @@ int main() {
                     }
                     if (endpoint) {
                         ImGui::Separator();
-                        ImGui::Text("Service: %u", static_cast<unsigned>(endpoint->serviceId));
+                        if (!endpoint->bindingLabel.empty()) {
+                            ImGui::Text("Endpoint: %s", endpoint->bindingLabel.c_str());
+                        }
+                        if (!endpoint->ingesterDisplayName.empty()) {
+                            ImGui::Text("Ingester: %s", endpoint->ingesterDisplayName.c_str());
+                        }
                         ImGui::Text("Input: %u pps", endpoint->stats.observedInputPointRate);
                         ImGui::Text("Output: %u pps", endpoint->stats.outputPointRate);
                         ImGui::Text("Latency: %ums", endpoint->stats.latencyMs);
@@ -485,7 +558,15 @@ int main() {
                 ImGui::TableNextColumn();
                 ImGui::AlignTextToFramePadding();
                 if (endpoint) {
-                    ImGui::Text("%u", static_cast<unsigned>(endpoint->serviceId));
+                    const char* endpointText =
+                        !endpoint->bindingValue.empty()
+                            ? endpoint->bindingValue.c_str()
+                            : !endpoint->bindingLabel.empty()
+                                  ? endpoint->bindingLabel.c_str()
+                                  : !endpoint->ingesterDisplayName.empty()
+                                        ? endpoint->ingesterDisplayName.c_str()
+                                        : "-";
+                    ImGui::TextUnformatted(endpointText);
                 } else {
                     ImGui::TextDisabled("-");
                 }
@@ -604,6 +685,8 @@ int main() {
         const bool bridgeRunning = snapshot.state == libera_link::RuntimeState::Running ||
                                    snapshot.state == libera_link::RuntimeState::StopRequested;
         const bool bridgeSelectionMatches = activeControllerIds == targetControllerIds;
+        const bool bridgeIngesterMatches =
+            !bridgeRunning || snapshot.activeIngesterId == bridgeOptions.ingesterId;
 
         if (!scanInFlight && !startInFlight && !stopInFlight) {
             if (rescanInFlight) {
@@ -617,7 +700,7 @@ int main() {
                 }
             } else if (bridgeSyncPending) {
                 if (bridgeRunning) {
-                    if (!bridgeSelectionMatches) {
+                    if (!bridgeSelectionMatches || !bridgeIngesterMatches) {
                         launchStop();
                     } else {
                         bridgeSyncPending = false;

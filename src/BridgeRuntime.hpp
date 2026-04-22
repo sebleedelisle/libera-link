@@ -5,6 +5,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace libera_link {
@@ -17,6 +18,8 @@ struct BridgeOptions {
     std::uint32_t latencyMs = 50;
     std::uint32_t maxLatencyMs = 1500;
     bool autoLatency = true;
+    std::string ingesterId;
+    std::unordered_map<std::string, std::string> ingesterOptions;
 };
 
 void printUsage(const char* exe);
@@ -66,7 +69,10 @@ struct EndpointSnapshot {
     std::string label;
     std::string id;
     std::string type;
-    std::uint8_t serviceId = 0;
+    std::string ingesterId;
+    std::string ingesterDisplayName;
+    std::string bindingLabel;
+    std::string bindingValue;
     EndpointStatsSnapshot stats;
 };
 
@@ -84,6 +90,8 @@ struct RuntimeSnapshot {
     RuntimeState state = RuntimeState::Stopped;
     std::string statusMessage = "Stopped";
     std::string lastError;
+    std::string activeIngesterId;
+    std::string activeIngesterDisplayName;
     bool stopRequested = false;
     bool hasDiscoveryResults = false;
     std::size_t discoveredControllers = 0;
