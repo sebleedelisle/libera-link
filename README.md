@@ -1,5 +1,7 @@
 # Libera Link
 
+## The Universal Translator for Lasers. 
+
 This app is part of the Libera family of apps all with a single aim : Run any laser with any control software. This is a key part of that
 aim. 
 
