@@ -47,6 +47,7 @@ class STDLaproGraphicOutput: public RTLaproGraphicOutput
     virtual int open(ODF_ENV *env, OPMODE opMode);
     virtual void close(ODF_ENV *env);
     virtual void process(ODF_ENV *env, CHUNKDATA &chunkData, ODF_TAXI_BUFFER *taxiBuffer);
+    virtual void getRealtimeStatus(IDNRealtimeStatus &status) const;
     virtual void housekeeping(ODF_ENV *env, bool shutdownFlag);
 };
 

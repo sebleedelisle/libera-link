@@ -1,4 +1,4 @@
-This directory vendors the OpenIDN bridge subset used by `idn-bridge`.
+This directory vendors the OpenIDN bridge subset used by `libera-link`.
 
 Source:
 - Upstream repo previously tracked at `extern/helios_openidn`

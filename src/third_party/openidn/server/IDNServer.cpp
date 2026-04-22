@@ -31,6 +31,7 @@
 
 
 // Standard libraries
+#include <algorithm>
 #include <string.h>
 #include <stdio.h>
 
@@ -296,6 +297,42 @@ uint16_t ODFSession::clearPipelineEvents(unsigned channelID)
     pipelineEvents[channelID] &= IDN_PEVFLG_CHANNEL_CLOSED;
 
     return result;
+}
+
+
+void ODFSession::getRealtimeStatus(int channelID, IDNRealtimeStatus &status) const
+{
+    auto accumulateChannel = [&status](const IDN_CHANNEL &channel)
+    {
+        if((channel.flags & CHANNEL_FLAG_OPEN) == 0) return;
+        if((channel.flags & CHANNEL_MASK_CONNSTATE) != CHANNEL_FLAG_CS_CONNECTED) return;
+
+        IDNService *service = (IDNService *)channel.serviceHnd;
+        if(service == (IDNService *)0) return;
+
+        IDNRealtimeStatus channelStatus;
+        service->getRealtimeStatus(channelStatus);
+
+        if(channelStatus.sessionHasMessages) status.sessionHasMessages = true;
+        if(channelStatus.devicesOccupyBuffers) status.devicesOccupyBuffers = true;
+        if(channelStatus.latencyValid &&
+           (!status.latencyValid || (channelStatus.latencyUS > status.latencyUS)))
+        {
+            status.latencyValid = true;
+            status.latencyUS = channelStatus.latencyUS;
+        }
+    };
+
+    if((channelID >= 0) && (channelID < (int)IDNVAL_CHANNEL_COUNT))
+    {
+        accumulateChannel(channels[channelID]);
+        return;
+    }
+
+    for(unsigned i = 0; i < IDNVAL_CHANNEL_COUNT; i++)
+    {
+        accumulateChannel(channels[i]);
+    }
 }
 
 
@@ -853,6 +890,7 @@ int IDNServer::processRtConnection(ODF_ENV *env, RECV_COOKIE *cookie, IDNHDR_RT_
     if(ackRspHdr != (IDNHDR_RT_ACKNOWLEDGE *)0)
     {
         ODFSession *session = (ODFSession *)connection->getSession();
+        IDNRealtimeStatus rtStatus;
 
         // -------------------
 
@@ -910,10 +948,11 @@ int IDNServer::processRtConnection(ODF_ENV *env, RECV_COOKIE *cookie, IDNHDR_RT_
         if(session != (ODFSession *)0)
         {
             if(session->hasOpenChannels()) stsFlagsOut |= IDNVAL_RTACK_STSFLG_SOCNL;
+            session->getRealtimeStatus(channelID, rtStatus);
         }
 
-        // IDNVAL_RTACK_STSFLG_DOBUF -> Devices occupy buffers
-        // IDNVAL_RTACK_STSFLG_SNMSG -> Session has messages
+        if(rtStatus.devicesOccupyBuffers) stsFlagsOut |= IDNVAL_RTACK_STSFLG_DOBUF;
+        if(rtStatus.sessionHasMessages) stsFlagsOut |= IDNVAL_RTACK_STSFLG_SNMSG;
 
         ackRspHdr->statusFlags = stsFlagsOut;
 
@@ -923,7 +962,7 @@ int IDNServer::processRtConnection(ODF_ENV *env, RECV_COOKIE *cookie, IDNHDR_RT_
 
         // -------------------
 
-        // ackRspHdr->latency =
+        ackRspHdr->latency = htob32(rtStatus.latencyValid ? rtStatus.latencyUS : 0);
     }
 
     // Check for close command (disconnect and graceful session close after message processing)

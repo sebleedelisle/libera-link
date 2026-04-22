@@ -17,25 +17,25 @@ jobs:
         include:
           - os: macos-latest
             preset: release
-            artifact: libera-port-macos
+            artifact: libera-link-macos
             pr_artifact_paths: |
-              build/idn_bridge_gui.app
-              build/idn_bridge
-            package_path: libera-port-macos.dmg
+              build/libera_link_gui.app
+              build/libera_link
+            package_path: libera-link-macos.dmg
           - os: ubuntu-latest
             preset: linux-release
-            artifact: libera-port-linux
+            artifact: libera-link-linux
             pr_artifact_paths: |
-              build/idn_bridge_gui
-              build/idn_bridge
-            package_path: libera-port-linux.AppImage
+              build/libera_link_gui
+              build/libera_link
+            package_path: libera-link-linux.AppImage
           - os: windows-latest
             preset: win-release
-            artifact: libera-port-windows
+            artifact: libera-link-windows
             pr_artifact_paths: |
-              build/Release/idn_bridge_gui.exe
-              build/Release/idn_bridge.exe
-            package_path: libera-port-windows.zip
+              build/Release/libera_link_gui.exe
+              build/Release/libera_link.exe
+            package_path: libera-link-windows.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -97,41 +97,41 @@ jobs:
       - name: Bundle libusb into app (macOS)
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
-          LIBUSB_PATH=$(otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb | awk '{print $1}' | sort -u)
+          LIBUSB_PATH=$(otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep libusb | awk '{print $1}' | sort -u)
           echo "Current libusb path: $LIBUSB_PATH"
 
-          mkdir -p build/idn_bridge_gui.app/Contents/Frameworks
+          mkdir -p build/libera_link_gui.app/Contents/Frameworks
           cp extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/macOS/libusb-1.0.0.dylib \
-            build/idn_bridge_gui.app/Contents/Frameworks/
+            build/libera_link_gui.app/Contents/Frameworks/
 
           install_name_tool -change "$LIBUSB_PATH" \
             @executable_path/../Frameworks/libusb-1.0.0.dylib \
-            build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui
+            build/libera_link_gui.app/Contents/MacOS/libera_link_gui
 
-          if otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep -q '@rpath/libusb'; then
+          if otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep -q '@rpath/libusb'; then
             echo "ERROR: libusb is still referenced via @rpath after install_name_tool"
-            otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb
+            otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep libusb
             exit 1
           fi
 
           install_name_tool -id @executable_path/../Frameworks/libusb-1.0.0.dylib \
-            build/idn_bridge_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
+            build/libera_link_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
 
           echo "Updated library paths:"
-          otool -L build/idn_bridge_gui.app/Contents/MacOS/idn_bridge_gui | grep libusb
+          otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep libusb
 
       - name: Sign app bundle
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
           codesign --force --options runtime \
             --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
-            build/idn_bridge_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
+            build/libera_link_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
 
           codesign --deep --force --options runtime \
             --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
-            build/idn_bridge_gui.app
+            build/libera_link_gui.app
 
-          codesign --verify --verbose build/idn_bridge_gui.app
+          codesign --verify --verbose build/libera_link_gui.app
 
       - name: Notarize app
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
@@ -140,37 +140,37 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          ditto -c -k --keepParent build/idn_bridge_gui.app "$RUNNER_TEMP/libera-port-notarize.zip"
+          ditto -c -k --keepParent build/libera_link_gui.app "$RUNNER_TEMP/libera-link-notarize.zip"
 
-          xcrun notarytool submit "$RUNNER_TEMP/libera-port-notarize.zip" \
+          xcrun notarytool submit "$RUNNER_TEMP/libera-link-notarize.zip" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
 
-          xcrun stapler staple build/idn_bridge_gui.app
+          xcrun stapler staple build/libera_link_gui.app
 
       - name: Package DMG (macOS)
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
-          rm -rf "build/Libera Port.app"
-          mv build/idn_bridge_gui.app "build/Libera Port.app"
+          rm -rf "build/Libera Link.app"
+          mv build/libera_link_gui.app "build/Libera Link.app"
 
           create-dmg \
-            --volname "Libera Port" \
+            --volname "Libera Link" \
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 100 \
-            --icon "Libera Port.app" 150 190 \
+            --icon "Libera Link.app" 150 190 \
             --app-drop-link 450 190 \
             --no-internet-enable \
-            "libera-port-macos.dmg" \
-            "build/Libera Port.app" || true
+            "libera-link-macos.dmg" \
+            "build/Libera Link.app" || true
 
-          test -f libera-port-macos.dmg
+          test -f libera-link-macos.dmg
 
           codesign --force --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
-            libera-port-macos.dmg
+            libera-link-macos.dmg
 
       - name: Sign executable (Windows)
         if: runner.os == 'Windows' && github.event_name != 'pull_request'
@@ -192,15 +192,15 @@ jobs:
       - name: Package AppImage (Linux)
         if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
-          cp icons/libera-port.png libera-port.png
+          cp icons/libera-link.png libera-link.png
 
-          sed 's/^          //' > libera-port.desktop <<'EOF'
+          sed 's/^          //' > libera-link.desktop <<'EOF'
           [Desktop Entry]
           Type=Application
-          Name=Libera Port
-          Comment=IDN bridge for Libera-compatible laser controllers
-          Exec=idn_bridge_gui
-          Icon=libera-port
+          Name=Libera Link
+          Comment=OpenIDN bridge for Libera-compatible laser controllers
+          Exec=libera_link_gui
+          Icon=libera-link
           Categories=Graphics;AudioVideo;
           Terminal=false
           EOF
@@ -210,23 +210,23 @@ jobs:
           export APPIMAGE_EXTRACT_AND_RUN=1
 
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
-            --executable build/idn_bridge_gui \
-            --desktop-file libera-port.desktop \
-            --icon-file libera-port.png
+            --executable build/libera_link_gui \
+            --desktop-file libera-link.desktop \
+            --icon-file libera-link.png
 
-          export OUTPUT=libera-port-linux.AppImage
+          export OUTPUT=libera-link-linux.AppImage
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
 
       - name: Package (Windows)
         if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: bash
         run: |
-          mkdir -p staging/libera-port
-          cp build/Release/idn_bridge_gui.exe staging/libera-port/
-          cp build/Release/idn_bridge.exe staging/libera-port/
+          mkdir -p staging/libera-link
+          cp build/Release/libera_link_gui.exe staging/libera-link/
+          cp build/Release/libera_link.exe staging/libera-link/
           cp extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/Windows/x64/Release/dll/libusb-1.0.dll \
-            staging/libera-port/ || true
-          cd staging && 7z a ../libera-port-windows.zip libera-port
+            staging/libera-link/ || true
+          cd staging && 7z a ../libera-link-windows.zip libera-link
 
       - name: Upload PR build artifact
         if: github.event_name == 'pull_request'
@@ -263,7 +263,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            libera-port-macos/libera-port-macos.dmg
-            libera-port-linux/libera-port-linux.AppImage
-            libera-port-windows/libera-port-windows.zip
+            libera-link-macos/libera-link-macos.dmg
+            libera-link-linux/libera-link-linux.AppImage
+            libera-link-windows/libera-link-windows.zip
           generate_release_notes: true

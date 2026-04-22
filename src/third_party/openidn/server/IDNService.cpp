@@ -254,6 +254,11 @@ bool IDNService::handlesMode(uint8_t serviceMode)
 }
 
 
+void IDNService::getRealtimeStatus(IDNRealtimeStatus &status) const
+{
+}
+
+
 void IDNService::housekeeping(ODF_ENV *env, bool shutdownFlag)
 {
 }

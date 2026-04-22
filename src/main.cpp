@@ -16,19 +16,19 @@ void onSignal(int) {
 } // namespace
 
 int main(int argc, char** argv) {
-    idn_bridge::BridgeOptions options;
-    const idn_bridge::ParseResult parseResult = idn_bridge::parseOptions(argc, argv, options);
-    if (parseResult == idn_bridge::ParseResult::Help) {
+    libera_link::BridgeOptions options;
+    const libera_link::ParseResult parseResult = libera_link::parseOptions(argc, argv, options);
+    if (parseResult == libera_link::ParseResult::Help) {
         return 0;
     }
-    if (parseResult != idn_bridge::ParseResult::Ok) {
+    if (parseResult != libera_link::ParseResult::Ok) {
         return 1;
     }
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    idn_bridge::BridgeRuntime runtime;
+    libera_link::BridgeRuntime runtime;
     runtime.setEchoLogsToStdStreams(true);
     if (!runtime.start(options)) {
         return 1;

@@ -20,17 +20,17 @@ namespace {
 
 using namespace std::chrono_literals;
 
-ImVec4 statusColor(idn_bridge::RuntimeState state) {
+ImVec4 statusColor(libera_link::RuntimeState state) {
     switch (state) {
-    case idn_bridge::RuntimeState::Running:
+    case libera_link::RuntimeState::Running:
         return ImVec4(0.40f, 0.88f, 0.55f, 1.0f);
-    case idn_bridge::RuntimeState::Scanning:
-    case idn_bridge::RuntimeState::Starting:
-    case idn_bridge::RuntimeState::StopRequested:
+    case libera_link::RuntimeState::Scanning:
+    case libera_link::RuntimeState::Starting:
+    case libera_link::RuntimeState::StopRequested:
         return ImVec4(0.95f, 0.78f, 0.32f, 1.0f);
-    case idn_bridge::RuntimeState::Failed:
+    case libera_link::RuntimeState::Failed:
         return ImVec4(0.95f, 0.34f, 0.34f, 1.0f);
-    case idn_bridge::RuntimeState::Stopped:
+    case libera_link::RuntimeState::Stopped:
     default:
         return ImVec4(0.68f, 0.72f, 0.78f, 1.0f);
     }
@@ -58,7 +58,7 @@ float drawBrandLogo(const LiberaApp& app, ImVec2 pos, float areaWidth, bool righ
     const float logoFontSize = boldFont->LegacySize * fontScale;
     const float baseSubFontSize = defaultFont->LegacySize * fontScale * 0.85f;
     const char* firstWord = "LIBERA";
-    const char* secondWord = "PORT";
+    const char* secondWord = "LINK";
     const char* subtitle = "UNIVERSAL TRANSLATOR FOR LASERS";
 
     const ImVec2 firstWordSize = boldFont->CalcTextSizeA(logoFontSize, FLT_MAX, 0.0f, firstWord);
@@ -83,6 +83,44 @@ float drawBrandLogo(const LiberaApp& app, ImVec2 pos, float areaWidth, bool righ
 
     return firstWordSize.y + 1.0f + subtitleSize.y;
 }
+
+void drawQueueBreakdown(std::size_t localQueuedPoints,
+                        std::size_t prefetchedPoints,
+                        std::size_t transportBufferedPoints) {
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float availableWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float separatorGap = 6.0f;
+    const char* separator = "+";
+    const float separatorWidth = ImGui::CalcTextSize(separator).x;
+    const float separatorBlockWidth = separatorWidth + (separatorGap * 2.0f);
+    const float slotWidth = std::max(
+        1.0f,
+        (availableWidth - (separatorBlockWidth * 2.0f)) / 3.0f);
+    const ImU32 textColor = ImGui::GetColorU32(ImGuiCol_Text);
+
+    auto drawValueInSlot = [&](float slotStartX, std::size_t value) {
+        const std::string text = std::to_string(value);
+        const float textWidth = ImGui::CalcTextSize(text.c_str()).x;
+        const float x = slotStartX + std::max(0.0f, slotWidth - textWidth);
+        drawList->AddText(ImVec2(x, origin.y), textColor, text.c_str());
+    };
+
+    const float firstSlotX = origin.x;
+    const float firstSeparatorX = firstSlotX + slotWidth + separatorGap;
+    const float secondSlotX = firstSlotX + slotWidth + separatorBlockWidth;
+    const float secondSeparatorX = secondSlotX + slotWidth + separatorGap;
+    const float thirdSlotX = secondSlotX + slotWidth + separatorBlockWidth;
+
+    drawValueInSlot(firstSlotX, localQueuedPoints);
+    drawList->AddText(ImVec2(firstSeparatorX, origin.y), textColor, separator);
+    drawValueInSlot(secondSlotX, prefetchedPoints);
+    drawList->AddText(ImVec2(secondSeparatorX, origin.y), textColor, separator);
+    drawValueInSlot(thirdSlotX, transportBufferedPoints);
+
+    ImGui::Dummy(ImVec2(availableWidth, lineHeight));
+}
 } // namespace
 
 int main() {
@@ -91,7 +129,7 @@ int main() {
         return 1;
     }
 
-    idn_bridge::BridgeRuntime runtime;
+    libera_link::BridgeRuntime runtime;
 
     std::future<bool> scanFuture;
     std::future<bool> startFuture;
@@ -110,7 +148,7 @@ int main() {
             return;
         }
 
-        const idn_bridge::BridgeOptions options;
+        const libera_link::BridgeOptions options;
         startFuture = std::async(std::launch::async,
                                  [&runtime, options, selectedIds = std::move(selectedIds)] {
                                      return runtime.start(options, selectedIds);
@@ -126,7 +164,7 @@ int main() {
     };
 
     {
-        const idn_bridge::BridgeOptions options;
+        const libera_link::BridgeOptions options;
         scanFuture = std::async(std::launch::async, [&runtime, options] {
             return runtime.scan(options);
         });
@@ -168,7 +206,7 @@ int main() {
         }
 
         std::set<std::string> activeControllerIds;
-        std::unordered_map<std::string, const idn_bridge::EndpointSnapshot*> endpointByControllerId;
+        std::unordered_map<std::string, const libera_link::EndpointSnapshot*> endpointByControllerId;
         endpointByControllerId.reserve(snapshot.endpoints.size());
         for (const auto& endpoint : snapshot.endpoints) {
             activeControllerIds.insert(endpoint.id);
@@ -198,12 +236,12 @@ int main() {
         auto bridgeableCount = [&]() -> std::size_t {
             return static_cast<std::size_t>(std::count_if(
                 snapshot.discovered.begin(), snapshot.discovered.end(),
-                [](const idn_bridge::DiscoveredControllerSnapshot& controller) {
+                [](const libera_link::DiscoveredControllerSnapshot& controller) {
                     return controller.bridgeable;
                 }));
         };
 
-        const auto runtimeLabel = idn_bridge::runtimeStateLabel(snapshot.state);
+        const auto runtimeLabel = libera_link::runtimeStateLabel(snapshot.state);
         const ImVec4 runtimeColor = statusColor(snapshot.state);
 
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -225,7 +263,7 @@ int main() {
         }
 
         const bool showTopError = !snapshot.lastError.empty() &&
-                                  snapshot.state == idn_bridge::RuntimeState::Failed;
+                                  snapshot.state == libera_link::RuntimeState::Failed;
         const float overviewHeight =
             (ImGui::GetFrameHeightWithSpacing() * 1.35f) +
             (ImGui::GetTextLineHeightWithSpacing() * (showTopError ? 3.1f : 2.35f)) +
@@ -241,8 +279,8 @@ int main() {
             ImGui::Button("Rescanning...", ImVec2(140.0f, 0.0f));
             ImGui::EndDisabled();
         } else {
-            const bool bridgeRunning = snapshot.state == idn_bridge::RuntimeState::Running ||
-                                       snapshot.state == idn_bridge::RuntimeState::StopRequested;
+            const bool bridgeRunning = snapshot.state == libera_link::RuntimeState::Running ||
+                                       snapshot.state == libera_link::RuntimeState::StopRequested;
             const char* scanButtonLabel = "RESCAN";
             const bool scanActionDisabled = startInFlight || stopInFlight;
             if (scanActionDisabled) {
@@ -253,7 +291,7 @@ int main() {
                     rescanInFlight = true;
                     bridgeSyncPending = false;
                 } else {
-                    const idn_bridge::BridgeOptions options;
+                    const libera_link::BridgeOptions options;
                     scanFuture = std::async(std::launch::async, [&runtime, options] {
                         return runtime.scan(options);
                     });
@@ -280,7 +318,7 @@ int main() {
         ImGui::SameLine();
         ImGui::TextWrapped("%s", snapshot.statusMessage.c_str());
 
-        if (!snapshot.lastError.empty() && snapshot.state == idn_bridge::RuntimeState::Failed) {
+        if (!snapshot.lastError.empty() && snapshot.state == libera_link::RuntimeState::Failed) {
             ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", snapshot.lastError.c_str());
         } else {
             ImGui::TextDisabled("%zu bridgeable controllers | %zu enabled | %zu active endpoints",
@@ -316,7 +354,7 @@ int main() {
             ImGui::TableSetupColumn("Service", ImGuiTableColumnFlags_WidthFixed, 72.0f);
             ImGui::TableSetupColumn("Rates", ImGuiTableColumnFlags_WidthFixed, 140.0f);
             ImGui::TableSetupColumn("Latency", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-            ImGui::TableSetupColumn("Queue", ImGuiTableColumnFlags_WidthFixed, 96.0f);
+            ImGui::TableSetupColumn("Queue", ImGuiTableColumnFlags_WidthFixed, 220.0f);
             ImGui::TableSetupColumn("Health", ImGuiTableColumnFlags_WidthFixed, 140.0f);
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
@@ -325,7 +363,7 @@ int main() {
                 ImGui::PushID(controller.id.c_str());
 
                 const auto endpointIt = endpointByControllerId.find(controller.id);
-                const idn_bridge::EndpointSnapshot* endpoint =
+                const libera_link::EndpointSnapshot* endpoint =
                     endpointIt != endpointByControllerId.end() ? endpointIt->second : nullptr;
                 bool selected = enabledControllers.count(controller.id) > 0;
                 const bool active = endpoint != nullptr;
@@ -386,9 +424,15 @@ int main() {
                         ImGui::Text("Input: %u pps", endpoint->stats.observedInputPointRate);
                         ImGui::Text("Output: %u pps", endpoint->stats.outputPointRate);
                         ImGui::Text("Latency: %ums", endpoint->stats.latencyMs);
-                        ImGui::Text("Queue: %zu / %zu",
-                                    endpoint->stats.queuedPoints,
+                        ImGui::Text("Buffered: %zu / %zu",
+                                    endpoint->stats.totalBufferedPoints,
                                     endpoint->stats.targetBufferedPoints);
+                        ImGui::Text("Local queue: %zu", endpoint->stats.queuedPoints);
+                        ImGui::Text("Controller: %zu", endpoint->stats.controllerBufferedPoints);
+                        ImGui::Text("Controller prefetch: %zu",
+                                    endpoint->stats.controllerPrefetchedPoints);
+                        ImGui::Text("Controller transport: %zu",
+                                    endpoint->stats.controllerTransportBufferedPoints);
                         ImGui::Text("Blank fill: %llu",
                                     static_cast<unsigned long long>(endpoint->stats.blankFillPoints));
                         ImGui::Text("Underruns: %llu",
@@ -467,9 +511,9 @@ int main() {
                 ImGui::TableNextColumn();
                 ImGui::AlignTextToFramePadding();
                 if (endpoint) {
-                    ImGui::Text("%zu/%zu",
-                                endpoint->stats.queuedPoints,
-                                endpoint->stats.targetBufferedPoints);
+                    drawQueueBreakdown(endpoint->stats.queuedPoints,
+                                       endpoint->stats.controllerPrefetchedPoints,
+                                       endpoint->stats.controllerTransportBufferedPoints);
                 } else {
                     ImGui::TextDisabled("-");
                 }
@@ -557,8 +601,8 @@ int main() {
         }
 
         const auto targetControllerIds = selectedBridgeableIds();
-        const bool bridgeRunning = snapshot.state == idn_bridge::RuntimeState::Running ||
-                                   snapshot.state == idn_bridge::RuntimeState::StopRequested;
+        const bool bridgeRunning = snapshot.state == libera_link::RuntimeState::Running ||
+                                   snapshot.state == libera_link::RuntimeState::StopRequested;
         const bool bridgeSelectionMatches = activeControllerIds == targetControllerIds;
 
         if (!scanInFlight && !startInFlight && !stopInFlight) {
@@ -589,7 +633,7 @@ int main() {
             }
         }
 
-        libera::ui::DrawPluginsWindow(&showPluginsWindow, idn_bridge::userPluginDirectory());
+        libera::ui::DrawPluginsWindow(&showPluginsWindow, libera_link::userPluginDirectory());
         app.endFrame();
     }
 

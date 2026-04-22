@@ -283,6 +283,11 @@ void AdapterBase::getName(char *nameBufferPtr, unsigned nameBufferSize)
 }
 
 
+void AdapterBase::getRealtimeStatus(IDNRealtimeStatus &status) const
+{
+}
+
+
 /* 
  
 ---> atomic available since C++11 !!!

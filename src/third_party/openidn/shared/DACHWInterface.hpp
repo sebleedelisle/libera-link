@@ -8,6 +8,7 @@
 #include "LaproAdapter.hpp"
 
 
+#include <atomic>
 #include <mutex>
 
 
@@ -57,7 +58,11 @@ class DACHWInterface: public LaproAdapter
     typedef LaproAdapter Inherited;
     std::mutex cmdMutex;
     bool enabledFlag = false;
+    std::atomic<uint32_t> queuedInputMessageCount{0};
+    std::atomic<uint64_t> queuedInputDurationUs{0};
     void commitChunk(TransformEnv &tfEnv, std::shared_ptr<SliceBuf> &sliceBuf);
+    void noteQueuedInput(uint32_t durationUs);
+    void noteDequeuedInput(uint32_t durationUs);
 
     // For repairing discontinuities
     uint16_t previousX;
@@ -70,6 +75,8 @@ class DACHWInterface: public LaproAdapter
     public:
     virtual int putBuffer(ODF_TAXI_BUFFER *taxiBuffer);
     virtual std::shared_ptr<SliceBuf> getNextBuffer(TransformEnv &tfEnv, unsigned &driverMode);
+    uint32_t getQueuedInputMessageCount() const;
+    uint64_t getQueuedInputDurationUs() const;
 };
 
 #endif

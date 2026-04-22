@@ -11,6 +11,7 @@
 
 // Project headers
 #include "../shared/ODFEnvironment.hpp"
+#include "../shared/IDNRealtimeStatus.hpp"
 
 
 
@@ -38,6 +39,7 @@ class RTOutput
 
     virtual void getDeviceName(char *nameBufferPtr, unsigned nameBufferSize) = 0;
     virtual unsigned clearPipelineEvents();
+    virtual void getRealtimeStatus(IDNRealtimeStatus &status) const;
 
     virtual void housekeeping(ODF_ENV *env, bool shutdownFlag);
 };

@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace idn_bridge {
+namespace libera_link {
 
 struct BridgeOptions {
     std::uint32_t discoveryTimeoutMs = 5000;
@@ -51,6 +51,10 @@ struct EndpointStatsSnapshot {
     std::uint64_t blankFillPoints = 0;
     std::uint64_t droppedPoints = 0;
     std::size_t queuedPoints = 0;
+    std::size_t controllerPrefetchedPoints = 0;
+    std::size_t controllerTransportBufferedPoints = 0;
+    std::size_t controllerBufferedPoints = 0;
+    std::size_t totalBufferedPoints = 0;
     std::uint32_t outputPointRate = 0;
     std::uint32_t observedInputPointRate = 0;
     std::uint32_t latencyMs = 0;
@@ -112,4 +116,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace idn_bridge
+} // namespace libera_link

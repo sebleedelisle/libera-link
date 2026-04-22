@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 // Project headers
+#include "IDNRealtimeStatus.hpp"
 #include "ODFTaxiBuffer.hpp"
 
 
@@ -71,6 +72,7 @@ class AdapterBase
     virtual int putBuffer(ODF_TAXI_BUFFER *taxiBuffer);
     virtual ODF_TAXI_BUFFER *getTrash();
     virtual void getName(char *nameBufferPtr, unsigned nameBufferSize);
+    virtual void getRealtimeStatus(IDNRealtimeStatus &status) const;
 };
 
 

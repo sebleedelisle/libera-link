@@ -2,6 +2,7 @@
 #include "LiberaPaths.hpp"
 
 #include "libera/System.hpp"
+#include "libera/core/LaserController.hpp"
 #include "libera/etherdream/EtherDreamManager.hpp"
 #include "libera/helios/HeliosControllerInfo.hpp"
 #include "libera/helios/HeliosManager.hpp"
@@ -33,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-namespace idn_bridge {
+namespace libera_link {
 namespace {
 
 using libera::core::LaserPoint;
@@ -149,6 +150,10 @@ public:
         std::uint64_t blankFillPoints = 0;
         std::uint64_t droppedPoints = 0;
         std::size_t queuedPoints = 0;
+        std::size_t controllerPrefetchedPoints = 0;
+        std::size_t controllerTransportBufferedPoints = 0;
+        std::size_t controllerBufferedPoints = 0;
+        std::size_t totalBufferedPoints = 0;
         std::uint32_t outputPointRate = 0;
         std::uint32_t observedInputPointRate = 0;
         std::uint32_t latencyMs = 0;
@@ -173,11 +178,12 @@ public:
         , autoLatency_(autoLatency)
         , logger_(std::move(logger)) {
         const auto initialRate = std::min<std::uint32_t>(30000u, maxPointRateValue_);
-        currentPointRate_ = std::max<std::uint32_t>(initialRate, 1000u);
-        commandedInputPps_.store(currentPointRate_, std::memory_order_relaxed);
+        const auto startingRate = std::max<std::uint32_t>(initialRate, 1000u);
+        currentPointRate_.store(startingRate, std::memory_order_relaxed);
+        commandedInputPps_.store(startingRate, std::memory_order_relaxed);
         buffering_.store(true, std::memory_order_relaxed);
 
-        controller_->setPointRate(currentPointRate_);
+        controller_->setPointRate(startingRate);
         controller_->setArmed(true);
         controller_->setRequestPointsCallback(
             [this](const PointFillRequest& req, std::vector<LaserPoint>& out) {
@@ -202,6 +208,7 @@ public:
         receivedSlices_.fetch_add(1, std::memory_order_relaxed);
         receivedPoints_.fetch_add(pointCount, std::memory_order_relaxed);
         const auto* points = reinterpret_cast<const ISPDB25Point*>(slice.dataChunk.data());
+        const auto downstreamBuffer = downstreamBufferSnapshot();
 
         std::vector<LaserPoint> translated;
         translated.reserve(pointCount);
@@ -219,22 +226,93 @@ public:
             std::lock_guard<std::mutex> lock(queueMutex_);
             hasSeenInput_ = true;
             lastInputAt_ = std::chrono::steady_clock::now();
-            const std::size_t projected = pendingPoints_.size() + translated.size();
-            if (projected > maxQueuedPoints_) {
-                const std::size_t overflow = projected - maxQueuedPoints_;
-                const std::size_t dropCount = std::min<std::size_t>(overflow, pendingPoints_.size());
-                for (std::size_t i = 0; i < dropCount; ++i) {
-                    pendingPoints_.pop_front();
-                }
-                droppedPoints_.fetch_add(dropCount, std::memory_order_relaxed);
-            }
             for (auto& p : translated) {
                 pendingPoints_.push_back(p);
+            }
+            std::size_t dropCount = 0;
+            while (!pendingPoints_.empty() &&
+                   (pendingPoints_.size() + downstreamBuffer.pointsInBuffer) > maxQueuedPoints_) {
+                pendingPoints_.pop_front();
+                ++dropCount;
+            }
+            if (dropCount > 0) {
+                droppedPoints_.fetch_add(dropCount, std::memory_order_relaxed);
             }
         }
 
         maybeUpdatePointRate(commandedPointRate);
         return 0;
+    }
+
+    void replaceFrameBuffer(const SliceBuf& buffer, bool clearControllerPrefetch = false) {
+        const auto bpp = bytesPerPoint();
+        if (bpp == 0 || buffer.empty()) {
+            return;
+        }
+
+        std::deque<LaserPoint> replacementPoints;
+        std::size_t totalPointCount = 0;
+        std::size_t totalLitCount = 0;
+        std::size_t validSliceCount = 0;
+        std::uint64_t totalDurationUs = 0;
+
+        for (const auto& slice : buffer) {
+            if (!slice || slice->dataChunk.size() < bpp) {
+                continue;
+            }
+
+            const std::size_t pointCount = slice->dataChunk.size() / bpp;
+            if (pointCount == 0) {
+                continue;
+            }
+
+            ++validSliceCount;
+            totalPointCount += pointCount;
+            totalDurationUs += slice->durationUs;
+
+            const auto* points =
+                reinterpret_cast<const ISPDB25Point*>(slice->dataChunk.data());
+            for (std::size_t i = 0; i < pointCount; ++i) {
+                const LaserPoint translated = toLaserPoint(points[i]);
+                if (translated.i > 0.0f &&
+                    (translated.r > 0.0f || translated.g > 0.0f || translated.b > 0.0f)) {
+                    ++totalLitCount;
+                }
+                replacementPoints.push_back(translated);
+            }
+        }
+
+        if (replacementPoints.empty()) {
+            return;
+        }
+
+        receivedSlices_.fetch_add(validSliceCount, std::memory_order_relaxed);
+        receivedPoints_.fetch_add(totalPointCount, std::memory_order_relaxed);
+        receivedLitPoints_.fetch_add(totalLitCount, std::memory_order_relaxed);
+
+        const auto downstreamBuffer = downstreamBufferSnapshot();
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            hasSeenInput_ = true;
+            lastInputAt_ = std::chrono::steady_clock::now();
+            pendingPoints_.swap(replacementPoints);
+
+            std::size_t dropCount = 0;
+            while (!pendingPoints_.empty() &&
+                   (pendingPoints_.size() + downstreamBuffer.pointsInBuffer) > maxQueuedPoints_) {
+                pendingPoints_.pop_front();
+                ++dropCount;
+            }
+            if (dropCount > 0) {
+                droppedPoints_.fetch_add(dropCount, std::memory_order_relaxed);
+            }
+        }
+
+        maybeUpdatePointRate(
+            inferCommandedPointRate(totalPointCount, static_cast<double>(totalDurationUs)));
+        if (clearControllerPrefetch && controller_) {
+            controller_->clearPointCallbackPrefetch();
+        }
     }
 
     SliceType convertPoints(const std::vector<ISPDB25Point>& points) override {
@@ -259,9 +337,10 @@ public:
 
     void setMaxPointrate(unsigned rate) override {
         maxPointRateValue_ = std::max<unsigned>(rate, 1000);
-        if (currentPointRate_ > maxPointRateValue_) {
-            currentPointRate_ = maxPointRateValue_;
-            controller_->setPointRate(currentPointRate_);
+        const auto currentRate = currentPointRate_.load(std::memory_order_relaxed);
+        if (currentRate > maxPointRateValue_) {
+            currentPointRate_.store(maxPointRateValue_, std::memory_order_relaxed);
+            controller_->setPointRate(maxPointRateValue_);
         }
     }
 
@@ -283,15 +362,21 @@ public:
         snapshot.emittedPoints = emittedPoints_.load(std::memory_order_relaxed);
         snapshot.blankFillPoints = blankFillPoints_.load(std::memory_order_relaxed);
         snapshot.droppedPoints = droppedPoints_.load(std::memory_order_relaxed);
-        snapshot.outputPointRate = currentPointRate_;
+        snapshot.outputPointRate = currentPointRate_.load(std::memory_order_relaxed);
         snapshot.observedInputPointRate = commandedInputPps_.load(std::memory_order_relaxed);
         snapshot.latencyMs = latencyMs_.load(std::memory_order_relaxed);
         snapshot.targetBufferedPoints = targetBufferedPoints();
         snapshot.buffering = buffering_.load(std::memory_order_relaxed);
+        const auto downstreamBuffer = downstreamBufferSnapshot();
+        snapshot.controllerPrefetchedPoints = downstreamBuffer.prefetchedPoints;
+        snapshot.controllerTransportBufferedPoints = downstreamBuffer.transportBufferedPoints;
+        snapshot.controllerBufferedPoints = downstreamBuffer.pointsInBuffer;
         {
             std::lock_guard<std::mutex> lock(queueMutex_);
             snapshot.queuedPoints = pendingPoints_.size();
         }
+        snapshot.totalBufferedPoints =
+            snapshot.queuedPoints + snapshot.controllerBufferedPoints;
         return snapshot;
     }
 
@@ -300,18 +385,51 @@ public:
         return isAwaitingInputLocked(std::chrono::steady_clock::now(), idleThreshold);
     }
 
+    void getRealtimeStatus(IDNRealtimeStatus& status) const override {
+        const auto downstreamBuffer = downstreamBufferSnapshot();
+
+        std::size_t localQueuedPoints = 0;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            localQueuedPoints = pendingPoints_.size();
+        }
+
+        const auto pointRate = std::max<std::uint32_t>(
+            1u, currentPointRate_.load(std::memory_order_relaxed));
+        const auto queuedInputLatencyUs = getQueuedInputDurationUs();
+        const auto bufferedPointCount =
+            static_cast<std::uint64_t>(localQueuedPoints + downstreamBuffer.pointsInBuffer);
+        const auto bufferedPointLatencyUs =
+            (bufferedPointCount * 1000000ull) / static_cast<std::uint64_t>(pointRate);
+        const auto totalLatencyUs = queuedInputLatencyUs + bufferedPointLatencyUs;
+
+        status.sessionHasMessages =
+            (getQueuedInputMessageCount() > 0) || (localQueuedPoints > 0);
+        status.devicesOccupyBuffers =
+            downstreamBuffer.valid && (downstreamBuffer.pointsInBuffer > 0);
+        if (totalLatencyUs > 0) {
+            status.latencyValid = true;
+            status.latencyUS = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                totalLatencyUs,
+                static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())));
+        }
+    }
+
 private:
-    static unsigned inferCommandedPointRate(const TimeSlice& slice,
-                                            std::size_t pointCount,
+    struct DownstreamBufferSnapshot {
+        std::size_t pointsInBuffer = 0;
+        std::size_t prefetchedPoints = 0;
+        std::size_t transportBufferedPoints = 0;
+        bool valid = false;
+    };
+
+    static unsigned inferCommandedPointRate(std::size_t pointCount,
                                             double durationUs) {
         if (pointCount == 0) {
             return 0;
         }
 
         double effectiveDurationUs = durationUs;
-        if (effectiveDurationUs <= 0.0) {
-            effectiveDurationUs = static_cast<double>(slice.durationUs);
-        }
         if (effectiveDurationUs <= 0.0) {
             return 0;
         }
@@ -324,9 +442,21 @@ private:
         return static_cast<unsigned>(std::llround(inferredRate));
     }
 
+    static unsigned inferCommandedPointRate(const TimeSlice& slice,
+                                            std::size_t pointCount,
+                                            double durationUs) {
+        double effectiveDurationUs = durationUs;
+        if (effectiveDurationUs <= 0.0) {
+            effectiveDurationUs = static_cast<double>(slice.durationUs);
+        }
+        return inferCommandedPointRate(pointCount, effectiveDurationUs);
+    }
+
     std::size_t targetBufferedPoints() const {
         const double latencyMs = static_cast<double>(latencyMs_.load(std::memory_order_relaxed));
-        const double rawPoints = (static_cast<double>(currentPointRate_) * latencyMs) / 1000.0;
+        const double rawPoints = (
+            static_cast<double>(currentPointRate_.load(std::memory_order_relaxed)) * latencyMs) /
+            1000.0;
         const std::size_t minPoints = 1000;
         const std::size_t maxPoints = std::max<std::size_t>(minPoints, maxQueuedPoints_ - 1);
         return std::clamp<std::size_t>(
@@ -370,20 +500,79 @@ private:
         return out;
     }
 
+    DownstreamBufferSnapshot downstreamBufferSnapshot(bool allowControllerQuery = true) const {
+        DownstreamBufferSnapshot snapshot;
+        if (!allowControllerQuery) {
+            snapshot.pointsInBuffer =
+                lastObservedDownstreamBufferedPoints_.load(std::memory_order_relaxed);
+            snapshot.prefetchedPoints =
+                lastObservedDownstreamPrefetchedPoints_.load(std::memory_order_relaxed);
+            snapshot.transportBufferedPoints =
+                lastObservedDownstreamTransportBufferedPoints_.load(std::memory_order_relaxed);
+            snapshot.valid =
+                lastObservedDownstreamBufferValid_.load(std::memory_order_relaxed);
+            return snapshot;
+        }
+
+        if (!controller_) {
+            lastObservedDownstreamBufferedPoints_.store(0, std::memory_order_relaxed);
+            lastObservedDownstreamPrefetchedPoints_.store(0, std::memory_order_relaxed);
+            lastObservedDownstreamTransportBufferedPoints_.store(0, std::memory_order_relaxed);
+            lastObservedDownstreamBufferValid_.store(false, std::memory_order_relaxed);
+            return snapshot;
+        }
+
+        const auto breakdown = controller_->getPointCallbackBufferBreakdown();
+        if (!breakdown) {
+            lastObservedDownstreamBufferedPoints_.store(0, std::memory_order_relaxed);
+            lastObservedDownstreamPrefetchedPoints_.store(0, std::memory_order_relaxed);
+            lastObservedDownstreamTransportBufferedPoints_.store(0, std::memory_order_relaxed);
+            lastObservedDownstreamBufferValid_.store(false, std::memory_order_relaxed);
+            return snapshot;
+        }
+
+        snapshot.pointsInBuffer = breakdown->totalBufferedPoints;
+        snapshot.prefetchedPoints = breakdown->prefetchedPoints;
+        snapshot.transportBufferedPoints = breakdown->transportBufferedPoints;
+        snapshot.valid = true;
+        lastObservedDownstreamBufferedPoints_.store(snapshot.pointsInBuffer,
+                                                    std::memory_order_relaxed);
+        lastObservedDownstreamPrefetchedPoints_.store(snapshot.prefetchedPoints,
+                                                      std::memory_order_relaxed);
+        lastObservedDownstreamTransportBufferedPoints_.store(
+            snapshot.transportBufferedPoints,
+            std::memory_order_relaxed);
+        lastObservedDownstreamBufferValid_.store(true, std::memory_order_relaxed);
+        return snapshot;
+    }
+
     void fillFromQueue(const PointFillRequest& req, std::vector<LaserPoint>& out) {
         if (req.maximumPointsRequired == 0) {
             return;
         }
 
         callbackCalls_.fetch_add(1, std::memory_order_relaxed);
+        // This callback runs from the controller's frame-extraction path.
+        // Re-entering controller_->getBufferState() here can deadlock on the
+        // framer mutex, so use the last safe snapshot gathered from non-callback
+        // threads instead of querying the controller synchronously.
+        const auto downstreamBuffer = downstreamBufferSnapshot(false);
         std::lock_guard<std::mutex> lock(queueMutex_);
         const std::size_t availableAtStart = pendingPoints_.size();
         const std::size_t targetPoints = targetBufferedPoints();
-        if (buffering_.load(std::memory_order_relaxed) && availableAtStart < targetPoints) {
+        const std::size_t totalBufferedAtStart =
+            availableAtStart + downstreamBuffer.pointsInBuffer;
+        if (buffering_.load(std::memory_order_relaxed) &&
+            totalBufferedAtStart < targetPoints) {
             const std::size_t missing = req.minimumPointsRequired;
             callbackUnderrunEvents_.fetch_add(1, std::memory_order_relaxed);
             callbackUnderrunPoints_.fetch_add(missing, std::memory_order_relaxed);
-            logUnderrunIfDue(req, availableAtStart, missing, targetPoints, true);
+            logUnderrunIfDue(req,
+                             availableAtStart,
+                             downstreamBuffer.pointsInBuffer,
+                             missing,
+                             targetPoints,
+                             true);
             appendFallbackPoints(out, missing);
             blankFillPoints_.fetch_add(missing, std::memory_order_relaxed);
             return;
@@ -406,7 +595,12 @@ private:
             callbackUnderrunEvents_.fetch_add(1, std::memory_order_relaxed);
             callbackUnderrunPoints_.fetch_add(blankCount, std::memory_order_relaxed);
             maybeIncreaseLatencyOnUnderrun(blankCount, req.minimumPointsRequired, targetPoints);
-            logUnderrunIfDue(req, availableAtStart, blankCount, targetPoints, false);
+            logUnderrunIfDue(req,
+                             availableAtStart,
+                             downstreamBuffer.pointsInBuffer,
+                             blankCount,
+                             targetPoints,
+                             false);
             appendFallbackPoints(out, blankCount);
             blankFillPoints_.fetch_add(blankCount, std::memory_order_relaxed);
             buffering_.store(true, std::memory_order_relaxed);
@@ -476,6 +670,7 @@ private:
 
     void logUnderrunIfDue(const PointFillRequest& req,
                           std::size_t available,
+                          std::size_t downstreamBufferedPoints,
                           std::size_t missing,
                           std::size_t targetPoints,
                           bool bufferingHold) {
@@ -497,7 +692,9 @@ private:
         oss << "[bridge:" << displayName_ << "] underrun"
             << " need_min=" << req.minimumPointsRequired
             << " need_max=" << req.maximumPointsRequired
-            << " available=" << available
+            << " queue_local=" << available
+            << " queue_controller=" << downstreamBufferedPoints
+            << " queue_total=" << (available + downstreamBufferedPoints)
             << " missing=" << missing
             << " target=" << targetPoints
             << " queue_now=" << pendingPoints_.size()
@@ -522,18 +719,18 @@ private:
         }
         const std::uint32_t proposed = std::clamp<std::uint32_t>(commandedPointRate, 1000u, maxPointRateValue_);
         commandedInputPps_.store(proposed, std::memory_order_relaxed);
-        if (proposed == currentPointRate_) {
+        if (proposed == currentPointRate_.load(std::memory_order_relaxed)) {
             return;
         }
         controller_->setPointRate(proposed);
-        currentPointRate_ = proposed;
+        currentPointRate_.store(proposed, std::memory_order_relaxed);
     }
 
     std::shared_ptr<libera::core::LaserController> controller_;
     std::string displayName_;
     unsigned maxPointRateValue_;
     std::size_t maxQueuedPoints_;
-    std::uint32_t currentPointRate_ = 30000;
+    std::atomic<std::uint32_t> currentPointRate_{30000};
     std::atomic<std::uint32_t> latencyMs_{300};
     std::uint32_t maxLatencyMs_ = 1500;
     bool autoLatency_ = true;
@@ -559,22 +756,26 @@ private:
     std::atomic<std::uint64_t> emittedPoints_{0};
     std::atomic<std::uint64_t> blankFillPoints_{0};
     std::atomic<std::uint64_t> droppedPoints_{0};
+    mutable std::atomic<std::size_t> lastObservedDownstreamBufferedPoints_{0};
+    mutable std::atomic<std::size_t> lastObservedDownstreamPrefetchedPoints_{0};
+    mutable std::atomic<std::size_t> lastObservedDownstreamTransportBufferedPoints_{0};
+    mutable std::atomic<bool> lastObservedDownstreamBufferValid_{false};
 };
 
-class IdnBridgeEndpoint {
+class LiberaLinkEndpoint {
 public:
-    IdnBridgeEndpoint(std::shared_ptr<libera::core::LaserController> controller,
-                      std::string dacLabel,
-                      std::string dacId,
-                      std::string dacType,
-                      unsigned maxPps,
-                      std::uint32_t sliceDurationUs,
-                      std::size_t maxQueuedPoints,
-                      std::uint32_t latencyMs,
-                      std::uint32_t maxLatencyMs,
-                      bool autoLatency,
-                      std::uint8_t serviceId,
-                      LogSink logger)
+    LiberaLinkEndpoint(std::shared_ptr<libera::core::LaserController> controller,
+                       std::string dacLabel,
+                       std::string dacId,
+                       std::string dacType,
+                       unsigned maxPps,
+                       std::uint32_t sliceDurationUs,
+                       std::size_t maxQueuedPoints,
+                       std::uint32_t latencyMs,
+                       std::uint32_t maxLatencyMs,
+                       bool autoLatency,
+                       std::uint8_t serviceId,
+                       LogSink logger)
         : label_(std::move(dacLabel))
         , id_(std::move(dacId))
         , type_(std::move(dacType))
@@ -591,14 +792,14 @@ public:
               autoLatency,
               logger_))
         , output_(std::make_unique<V1LaproGraphicOutput>(adapter_)) {
-        const std::string bridgedServiceName = std::string("IDNBridge ") + label_;
+        const std::string bridgedServiceName = std::string("Libera Link ") + label_;
         std::vector<char> serviceName(bridgedServiceName.begin(), bridgedServiceName.end());
         serviceName.push_back('\0');
         const bool isDefault = (serviceId_ == 1);
         service_ = std::make_unique<IDNLaproService>(serviceId_, serviceName.data(), isDefault, output_.get());
     }
 
-    ~IdnBridgeEndpoint() {
+    ~LiberaLinkEndpoint() {
         stop();
     }
 
@@ -648,6 +849,11 @@ public:
         snapshot.stats.blankFillPoints = stats.blankFillPoints;
         snapshot.stats.droppedPoints = stats.droppedPoints;
         snapshot.stats.queuedPoints = stats.queuedPoints;
+        snapshot.stats.controllerPrefetchedPoints = stats.controllerPrefetchedPoints;
+        snapshot.stats.controllerTransportBufferedPoints =
+            stats.controllerTransportBufferedPoints;
+        snapshot.stats.controllerBufferedPoints = stats.controllerBufferedPoints;
+        snapshot.stats.totalBufferedPoints = stats.totalBufferedPoints;
         snapshot.stats.outputPointRate = stats.outputPointRate;
         snapshot.stats.observedInputPointRate = stats.observedInputPointRate;
         snapshot.stats.latencyMs = stats.latencyMs;
@@ -698,7 +904,11 @@ public:
             << " lat_ms=" << stats.latencyMs
             << " lat_pts=" << stats.targetBufferedPoints
             << " buffering=" << (stats.buffering ? 1 : 0)
-            << " queue=" << stats.queuedPoints
+            << " queue_local=" << stats.queuedPoints
+            << " queue_prefetch=" << stats.controllerPrefetchedPoints
+            << " queue_transport=" << stats.controllerTransportBufferedPoints
+            << " queue_controller=" << stats.controllerBufferedPoints
+            << " queue_total=" << stats.totalBufferedPoints
             << " blank/s=" << deltaBlank
             << " drop/s=" << deltaDropped;
         logger_->info(oss.str());
@@ -707,6 +917,17 @@ public:
     }
 
 private:
+    static std::chrono::microseconds bufferReplayInterval(const SliceBuf& buffer) {
+        auto total = 0us;
+        for (const auto& slice : buffer) {
+            if (!slice) {
+                continue;
+            }
+            total += std::chrono::microseconds(slice->durationUs);
+        }
+        return total;
+    }
+
     void driverLoop() {
         TransformEnv tfEnv;
         tfEnv.usPerSlice = static_cast<double>(sliceDurationUs_);
@@ -714,15 +935,46 @@ private:
 
         unsigned driverMode = DRIVER_INACTIVE;
         auto currentBuffer = std::make_shared<SliceBuf>();
+        auto nextFrameReplayAt = std::chrono::steady_clock::time_point{};
 
         while (running_.load(std::memory_order_relaxed)) {
+            bool hasFreshFrameInput = false;
             auto nextBuffer = adapter_->getNextBuffer(tfEnv, driverMode);
             if (nextBuffer && !nextBuffer->empty()) {
                 currentBuffer = nextBuffer;
+                if (driverMode == DRIVER_FRAMEMODE) {
+                    nextFrameReplayAt = std::chrono::steady_clock::now();
+                    hasFreshFrameInput = true;
+                }
             }
 
             if (!currentBuffer || currentBuffer->empty()) {
                 std::this_thread::sleep_for(1ms);
+                continue;
+            }
+
+            if (driverMode == DRIVER_FRAMEMODE &&
+                nextFrameReplayAt != std::chrono::steady_clock::time_point{}) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now < nextFrameReplayAt) {
+                    const auto sleepFor = std::min(
+                        1ms,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            nextFrameReplayAt - now));
+                    if (sleepFor > 0ms) {
+                        std::this_thread::sleep_for(sleepFor);
+                    }
+                    continue;
+                }
+            }
+
+            if (driverMode == DRIVER_FRAMEMODE) {
+                adapter_->replaceFrameBuffer(*currentBuffer, hasFreshFrameInput);
+                auto replayInterval = bufferReplayInterval(*currentBuffer);
+                if (replayInterval <= 0us) {
+                    replayInterval = 1ms;
+                }
+                nextFrameReplayAt = std::chrono::steady_clock::now() + replayInterval;
                 continue;
             }
 
@@ -736,11 +988,8 @@ private:
                 }
 
                 adapter_->writeFrame(*nextSlice, static_cast<double>(nextSlice->durationUs));
-
-                if (driverMode == DRIVER_FRAMEMODE) {
-                    currentBuffer->push_back(nextSlice);
-                }
             }
+            nextFrameReplayAt = std::chrono::steady_clock::time_point{};
         }
     }
 
@@ -848,7 +1097,7 @@ std::vector<DiscoveredControllerSnapshot> buildDiscoveredControllerSnapshots(
     return snapshots;
 }
 
-void stopStartedEndpoints(std::vector<std::unique_ptr<IdnBridgeEndpoint>>& endpoints) {
+void stopStartedEndpoints(std::vector<std::unique_ptr<LiberaLinkEndpoint>>& endpoints) {
     for (auto& endpoint : endpoints) {
         endpoint->stop();
     }
@@ -869,7 +1118,7 @@ struct BridgeRuntime::Impl {
     std::unique_ptr<SockIDNServer> server;
     std::thread serverThread;
     std::thread monitorThread;
-    std::vector<std::unique_ptr<IdnBridgeEndpoint>> endpoints;
+    std::vector<std::unique_ptr<LiberaLinkEndpoint>> endpoints;
 
     std::atomic<bool> stopRequested{false};
     LogSink logger = std::make_shared<RuntimeLogger>();
@@ -1044,11 +1293,19 @@ bool BridgeRuntime::start(const BridgeOptions& options,
 
     impl_->logger->clear();
     impl_->stopRequested.store(false, std::memory_order_relaxed);
+
+    // The bridge adapter already owns end-to-end latency/buffering. Disable
+    // Libera's additional global point-callback latency target so frame-based
+    // transports such as Helios do not build an extra ~100ms virtual backlog
+    // on top of the bridge queue.
+    libera::core::LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    libera::core::LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(0));
+
     if (selectedControllerIds.empty()) {
-        impl_->logger->info("Starting IDN Bridge");
+        impl_->logger->info("Starting Libera Link");
     } else {
         std::ostringstream oss;
-        oss << "Starting IDN Bridge for " << selectedControllerIds.size()
+        oss << "Starting Libera Link for " << selectedControllerIds.size()
             << " selected controller(s)";
         impl_->logger->info(oss.str());
     }
@@ -1094,7 +1351,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
     }
 
     LLNode<ServiceNode>* firstService = nullptr;
-    std::vector<std::unique_ptr<IdnBridgeEndpoint>> endpoints;
+    std::vector<std::unique_ptr<LiberaLinkEndpoint>> endpoints;
     endpoints.reserve(discovered.size());
 
     std::size_t startedEndpoints = 0;
@@ -1145,7 +1402,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
             break;
         }
 
-        auto endpoint = std::make_unique<IdnBridgeEndpoint>(
+        auto endpoint = std::make_unique<LiberaLinkEndpoint>(
             controller,
             info->labelValue(),
             info->idValue(),
@@ -1258,7 +1515,7 @@ void BridgeRuntime::stop() {
 
     std::thread serverThread;
     std::unique_ptr<SockIDNServer> server;
-    std::vector<std::unique_ptr<IdnBridgeEndpoint>> endpoints;
+    std::vector<std::unique_ptr<LiberaLinkEndpoint>> endpoints;
     bool hadActiveResources = false;
 
     {
@@ -1310,4 +1567,4 @@ RuntimeSnapshot BridgeRuntime::snapshot() const {
     return snapshot;
 }
 
-} // namespace idn_bridge
+} // namespace libera_link

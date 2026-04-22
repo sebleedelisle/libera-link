@@ -48,7 +48,11 @@ unsigned RTOutput::clearPipelineEvents()
 }
 
 
-void RTOutput::housekeeping(ODF_ENV *env, bool shutdownFlag)
+void RTOutput::getRealtimeStatus(IDNRealtimeStatus &status) const
 {
 }
 
+
+void RTOutput::housekeeping(ODF_ENV *env, bool shutdownFlag)
+{
+}

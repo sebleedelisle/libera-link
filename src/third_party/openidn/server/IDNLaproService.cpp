@@ -207,8 +207,16 @@ void IDNLaproService::releaseInlet(ODF_ENV *env, IDNInlet *inlet)
 }
 
 
+void IDNLaproService::getRealtimeStatus(IDNRealtimeStatus &status) const
+{
+    if(rtOutput != (RTLaproGraphicOutput *)0)
+    {
+        rtOutput->getRealtimeStatus(status);
+    }
+}
+
+
 void IDNLaproService::housekeeping(ODF_ENV *env, bool shutdownFlag)
 {
     rtOutput->housekeeping(env, shutdownFlag);
 }
-

@@ -151,6 +151,15 @@ void STDLaproGraphicOutput::close(ODF_ENV *env)
 }
 
 
+void STDLaproGraphicOutput::getRealtimeStatus(IDNRealtimeStatus &status) const
+{
+    if(adapter != (LaproAdapter *)0)
+    {
+        adapter->getRealtimeStatus(status);
+    }
+}
+
+
 void STDLaproGraphicOutput::process(ODF_ENV *env, CHUNKDATA &chunkData, ODF_TAXI_BUFFER *taxiBuffer)
 {
     TracePrinter tpr(env, "STDLaproGraphicOutput~process");
@@ -255,4 +264,3 @@ void STDLaproGraphicOutput::housekeeping(ODF_ENV *env, bool shutdownFlag)
     // Not idle: Recycle taxi buffers that were processed by the adapter
     recycle();
 }
-

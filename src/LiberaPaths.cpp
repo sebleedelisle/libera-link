@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <system_error>
 
-namespace idn_bridge {
+namespace libera_link {
 namespace {
 
 std::string envValue(const char* name) {
@@ -48,45 +48,7 @@ std::filesystem::path defaultSettingsDirectory() {
         baseDir = std::filesystem::current_path();
     }
 
-    return baseDir / "LiberaPort";
-}
-
-std::filesystem::path legacySettingsDirectory() {
-    std::filesystem::path baseDir;
-
-#ifdef _WIN32
-    const auto appData = envValue("APPDATA");
-    if (!appData.empty()) {
-        baseDir = appData;
-    } else {
-        const auto userProfile = envValue("USERPROFILE");
-        if (!userProfile.empty()) {
-            baseDir = std::filesystem::path(userProfile) / "AppData" / "Roaming";
-        }
-    }
-#elif defined(__APPLE__)
-    const auto home = envValue("HOME");
-    if (!home.empty()) {
-        baseDir = std::filesystem::path(home) / "Library" / "Application Support";
-    }
-#else
-    const auto xdgConfig = envValue("XDG_CONFIG_HOME");
-    if (!xdgConfig.empty()) {
-        baseDir = xdgConfig;
-    } else {
-        const auto home = envValue("HOME");
-        if (!home.empty()) {
-            baseDir = std::filesystem::path(home) / ".config";
-        }
-    }
-#endif
-
-    if (baseDir.empty()) {
-        baseDir = std::filesystem::current_path();
-    }
-
-    // Preserve the old folder name long enough to migrate existing settings/plugins.
-    return baseDir / "LiberaPortal";
+    return baseDir / "LiberaLink";
 }
 
 } // namespace
@@ -94,12 +56,7 @@ std::filesystem::path legacySettingsDirectory() {
 const std::string& settingsDirectory() {
     static const std::string path = [] {
         const auto dir = defaultSettingsDirectory();
-        const auto legacyDir = legacySettingsDirectory();
         std::error_code ec;
-        if (dir != legacyDir && !std::filesystem::exists(dir, ec) && std::filesystem::exists(legacyDir, ec)) {
-            std::filesystem::rename(legacyDir, dir, ec);
-            ec.clear();
-        }
         std::filesystem::create_directories(dir, ec);
         return dir.string();
     }();
@@ -126,4 +83,4 @@ void configureLiberaPluginDirectories() {
     configured = true;
 }
 
-} // namespace idn_bridge
+} // namespace libera_link

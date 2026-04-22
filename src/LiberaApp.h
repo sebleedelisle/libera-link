@@ -4,7 +4,7 @@ struct GLFWwindow;
 struct ImFont;
 
 struct LiberaAppConfig {
-    const char* title = "Libera Port";
+    const char* title = "Libera Link";
     int width = 1100;
     int height = 760;
     int windowX = -1;

@@ -1,6 +1,6 @@
-# IDN Bridge
+# Libera Link
 
-`IDN Bridge` discovers DACs with [`libera-laser`](https://github.com/sebleedelisle/libera-laser) and exposes each discovered DAC as an OpenIDN service endpoint.
+`Libera Link` discovers DACs with [`libera-laser`](https://github.com/sebleedelisle/libera-laser) and exposes each discovered DAC as an OpenIDN service endpoint.
 
 All discovered DACs are exposed as separate OpenIDN services on a single UDP port (default `7255`), matching standard OpenIDN behavior.
 
@@ -18,7 +18,7 @@ cmake --preset release
 cmake --build --preset release --parallel
 ```
 
-`IDN_BRIDGE_OPENIDN_BRIDGE_MODE` controls bridge-specific OpenIDN behavior:
+`LIBERA_LINK_OPENIDN_BRIDGE_MODE` controls bridge-specific OpenIDN behavior:
 
 - `ON` (default): enables macOS/bridge behavior patches.
 - `OFF`: keeps original OpenIDN behavior paths.
@@ -34,13 +34,13 @@ Release setup and required GitHub secrets/variables are documented in
 ## Run
 
 ```bash
-./build/idn_bridge
+./build/libera_link
 ```
 
 Useful options:
 
 ```bash
-./build/idn_bridge --idn-port 7255 --discovery-timeout-ms 8000 --max-dacs 4
+./build/libera_link --idn-port 7255 --discovery-timeout-ms 8000 --max-dacs 4
 ```
 
 ## Notes

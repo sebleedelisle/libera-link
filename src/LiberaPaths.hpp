@@ -2,10 +2,10 @@
 
 #include <string>
 
-namespace idn_bridge {
+namespace libera_link {
 
 const std::string& settingsDirectory();
 const std::string& userPluginDirectory();
 void configureLiberaPluginDirectories();
 
-} // namespace idn_bridge
+} // namespace libera_link

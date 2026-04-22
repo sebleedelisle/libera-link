@@ -117,6 +117,7 @@ class ODFSession: public IDNSession, public LLNode<SessionNode>
     virtual ~ODFSession();
 
     virtual uint16_t clearPipelineEvents(unsigned channelID);
+    virtual void getRealtimeStatus(int channelID, IDNRealtimeStatus &status) const;
 
     virtual void cancelGracefully(ODF_ENV *env);
     virtual void cancelImmediately(ODF_ENV *env);

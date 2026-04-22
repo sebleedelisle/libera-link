@@ -907,7 +907,7 @@ void SockIDNServer::networkThreadFunc()
     uint8_t hostName[HOST_NAME_SIZE] = { 0 };
     if(gethostname(reinterpret_cast<char *>(hostName), sizeof(hostName) - 1) != 0)
     {
-        snprintf(reinterpret_cast<char *>(hostName), sizeof(hostName), "idn-bridge");
+        snprintf(reinterpret_cast<char *>(hostName), sizeof(hostName), "libera-link");
     }
 
     // Non-Linux fallback: deterministic per-host UnitID.

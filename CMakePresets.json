@@ -15,8 +15,8 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0",
-        "IDN_BRIDGE_BUILD_GUI": "ON",
-        "IDN_BRIDGE_USE_BUNDLED_LIBUSB": "ON",
+        "LIBERA_LINK_BUILD_GUI": "ON",
+        "LIBERA_LINK_USE_BUNDLED_LIBUSB": "ON",
         "LIBERA_BUILD_TESTS": "OFF",
         "LIBERA_BUILD_EXAMPLES": "OFF"
       }
@@ -30,8 +30,8 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0",
-        "IDN_BRIDGE_BUILD_GUI": "ON",
-        "IDN_BRIDGE_USE_BUNDLED_LIBUSB": "ON",
+        "LIBERA_LINK_BUILD_GUI": "ON",
+        "LIBERA_LINK_USE_BUNDLED_LIBUSB": "ON",
         "LIBERA_BUILD_TESTS": "OFF",
         "LIBERA_BUILD_EXAMPLES": "OFF"
       }
@@ -43,8 +43,8 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "IDN_BRIDGE_BUILD_GUI": "ON",
-        "IDN_BRIDGE_USE_BUNDLED_LIBUSB": "ON",
+        "LIBERA_LINK_BUILD_GUI": "ON",
+        "LIBERA_LINK_USE_BUNDLED_LIBUSB": "ON",
         "LIBERA_BUILD_TESTS": "OFF",
         "LIBERA_BUILD_EXAMPLES": "OFF"
       }
@@ -56,8 +56,8 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "IDN_BRIDGE_BUILD_GUI": "ON",
-        "IDN_BRIDGE_USE_BUNDLED_LIBUSB": "ON",
+        "LIBERA_LINK_BUILD_GUI": "ON",
+        "LIBERA_LINK_USE_BUNDLED_LIBUSB": "ON",
         "LIBERA_BUILD_TESTS": "OFF",
         "LIBERA_BUILD_EXAMPLES": "OFF"
       }
@@ -69,8 +69,8 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "IDN_BRIDGE_BUILD_GUI": "ON",
-        "IDN_BRIDGE_USE_BUNDLED_LIBUSB": "ON",
+        "LIBERA_LINK_BUILD_GUI": "ON",
+        "LIBERA_LINK_USE_BUNDLED_LIBUSB": "ON",
         "LIBERA_BUILD_TESTS": "OFF",
         "LIBERA_BUILD_EXAMPLES": "OFF"
       }

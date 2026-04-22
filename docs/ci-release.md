@@ -73,7 +73,7 @@ git push origin v0.1.0
 
 4. Wait for the tagged `Build` workflow to complete.
 5. Verify the GitHub Release contains:
-   `libera-port-macos.dmg`, `libera-port-linux.AppImage`, `libera-port-windows.zip`
+   `libera-link-macos.dmg`, `libera-link-linux.AppImage`, `libera-link-windows.zip`
 
 ## Notes
 
@@ -82,6 +82,6 @@ git push origin v0.1.0
 - Local preset verification command:
 
 ```bash
-cmake --preset release -B build-ci-verify
-cmake --build build-ci-verify --parallel
+cmake --preset release
+cmake --build --preset release --parallel
 ```

@@ -42,6 +42,7 @@
 
 // Project headers
 #include "../shared/ODFEnvironment.hpp"
+#include "../shared/IDNRealtimeStatus.hpp"
 #include "../shared/ODFTaxiBuffer.hpp"
 #include "LLNode.hpp"
 
@@ -146,6 +147,7 @@ class IDNService: public LLNode<ServiceNode>
     virtual bool handlesMode(uint8_t serviceMode);
     virtual IDNInlet *requestInlet(ODF_ENV *env, uint8_t serviceMode) = 0;
     virtual void releaseInlet(ODF_ENV *env, IDNInlet *inlet) = 0;
+    virtual void getRealtimeStatus(IDNRealtimeStatus &status) const;
 
     virtual void housekeeping(ODF_ENV *env, bool shutdownFlag);
 

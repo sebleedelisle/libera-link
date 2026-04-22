@@ -7,6 +7,37 @@
 #include "DACHWInterface.hpp"
 
 
+void DACHWInterface::noteQueuedInput(uint32_t durationUs)
+{
+    queuedInputMessageCount.fetch_add(1, std::memory_order_relaxed);
+    queuedInputDurationUs.fetch_add(durationUs, std::memory_order_relaxed);
+}
+
+
+void DACHWInterface::noteDequeuedInput(uint32_t durationUs)
+{
+    uint32_t messageCount = queuedInputMessageCount.load(std::memory_order_relaxed);
+    while(1)
+    {
+        uint32_t desiredCount = (messageCount > 0) ? (messageCount - 1) : 0;
+        if(queuedInputMessageCount.compare_exchange_weak(messageCount, desiredCount, std::memory_order_relaxed))
+        {
+            break;
+        }
+    }
+
+    uint64_t current = queuedInputDurationUs.load(std::memory_order_relaxed);
+    while(1)
+    {
+        uint64_t desired = (current > durationUs) ? (current - durationUs) : 0;
+        if(queuedInputDurationUs.compare_exchange_weak(current, desired, std::memory_order_relaxed))
+        {
+            break;
+        }
+    }
+}
+
+
 void DACHWInterface::commitChunk(TransformEnv &tfEnv, std::shared_ptr<SliceBuf> &sliceBuf)
 {
     if(tfEnv.db25Accu.size() != 0) 
@@ -57,7 +88,13 @@ int DACHWInterface::putBuffer(ODF_TAXI_BUFFER *taxiBuffer)
     }
     else
     {
-        return Inherited::putBuffer(taxiBuffer);
+        int result = Inherited::putBuffer(taxiBuffer);
+        if(result == 0)
+        {
+            LAPRO_CHUNK_MEMO *memo = (LAPRO_CHUNK_MEMO *)(taxiBuffer->getMemoPtr());
+            noteQueuedInput(memo != (LAPRO_CHUNK_MEMO *)0 ? memo->duration : 0);
+        }
+        return result;
     }
 }
 
@@ -159,6 +196,10 @@ std::shared_ptr<SliceBuf> DACHWInterface::getNextBuffer(TransformEnv &tfEnv, uns
             {
                 printf("peekCaret()/readCaret() mismatch\n");
                 db25Samples.clear();
+            }
+            else
+            {
+                noteDequeuedInput(duration);
             }
             taxiBuffer = (ODF_TAXI_BUFFER *)0;
 
@@ -292,4 +333,16 @@ std::shared_ptr<SliceBuf> DACHWInterface::getNextBuffer(TransformEnv &tfEnv, uns
         }
     }
     return sliceBuf;
+}
+
+
+uint32_t DACHWInterface::getQueuedInputMessageCount() const
+{
+    return queuedInputMessageCount.load(std::memory_order_relaxed);
+}
+
+
+uint64_t DACHWInterface::getQueuedInputDurationUs() const
+{
+    return queuedInputDurationUs.load(std::memory_order_relaxed);
 }
