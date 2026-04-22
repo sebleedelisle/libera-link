@@ -19,7 +19,7 @@ jobs:
             preset: release
             artifact: libera-link-macos
             pr_artifact_paths: |
-              build/libera_link_gui.app
+              build/Libera Link.app
               build/libera_link
             package_path: libera-link-macos.dmg
           - os: ubuntu-latest
@@ -38,6 +38,10 @@ jobs:
             package_path: libera-link-windows.zip
 
     runs-on: ${{ matrix.os }}
+    env:
+      MACOS_APP_BUNDLE: build/Libera Link.app
+      MACOS_APP_EXECUTABLE: build/Libera Link.app/Contents/MacOS/Libera Link
+      MACOS_FRAMEWORKS_DIR: build/Libera Link.app/Contents/Frameworks
 
     steps:
       - name: Checkout
@@ -60,7 +64,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libusb-1.0-0-dev \
+          sudo apt-get install -y ninja-build imagemagick libusb-1.0-0-dev \
             libgl-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libxkbcommon-dev \
             libwayland-dev wayland-protocols libdecor-0-dev
@@ -97,41 +101,41 @@ jobs:
       - name: Bundle libusb into app (macOS)
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
-          LIBUSB_PATH=$(otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep libusb | awk '{print $1}' | sort -u)
+          LIBUSB_PATH=$(otool -L "$MACOS_APP_EXECUTABLE" | grep libusb | awk '{print $1}' | sort -u)
           echo "Current libusb path: $LIBUSB_PATH"
 
-          mkdir -p build/libera_link_gui.app/Contents/Frameworks
+          mkdir -p "$MACOS_FRAMEWORKS_DIR"
           cp extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/macOS/libusb-1.0.0.dylib \
-            build/libera_link_gui.app/Contents/Frameworks/
+            "$MACOS_FRAMEWORKS_DIR/"
 
           install_name_tool -change "$LIBUSB_PATH" \
             @executable_path/../Frameworks/libusb-1.0.0.dylib \
-            build/libera_link_gui.app/Contents/MacOS/libera_link_gui
+            "$MACOS_APP_EXECUTABLE"
 
-          if otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep -q '@rpath/libusb'; then
+          if otool -L "$MACOS_APP_EXECUTABLE" | grep -q '@rpath/libusb'; then
             echo "ERROR: libusb is still referenced via @rpath after install_name_tool"
-            otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep libusb
+            otool -L "$MACOS_APP_EXECUTABLE" | grep libusb
             exit 1
           fi
 
           install_name_tool -id @executable_path/../Frameworks/libusb-1.0.0.dylib \
-            build/libera_link_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
+            "$MACOS_FRAMEWORKS_DIR/libusb-1.0.0.dylib"
 
           echo "Updated library paths:"
-          otool -L build/libera_link_gui.app/Contents/MacOS/libera_link_gui | grep libusb
+          otool -L "$MACOS_APP_EXECUTABLE" | grep libusb
 
       - name: Sign app bundle
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
           codesign --force --options runtime \
             --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
-            build/libera_link_gui.app/Contents/Frameworks/libusb-1.0.0.dylib
+            "$MACOS_FRAMEWORKS_DIR/libusb-1.0.0.dylib"
 
           codesign --deep --force --options runtime \
             --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
-            build/libera_link_gui.app
+            "$MACOS_APP_BUNDLE"
 
-          codesign --verify --verbose build/libera_link_gui.app
+          codesign --verify --verbose "$MACOS_APP_BUNDLE"
 
       - name: Notarize app
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
@@ -140,7 +144,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          ditto -c -k --keepParent build/libera_link_gui.app "$RUNNER_TEMP/libera-link-notarize.zip"
+          ditto -c -k --keepParent "$MACOS_APP_BUNDLE" "$RUNNER_TEMP/libera-link-notarize.zip"
 
           xcrun notarytool submit "$RUNNER_TEMP/libera-link-notarize.zip" \
             --apple-id "$APPLE_ID" \
@@ -148,14 +152,11 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --wait
 
-          xcrun stapler staple build/libera_link_gui.app
+          xcrun stapler staple "$MACOS_APP_BUNDLE"
 
       - name: Package DMG (macOS)
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
-          rm -rf "build/Libera Link.app"
-          mv build/libera_link_gui.app "build/Libera Link.app"
-
           create-dmg \
             --volname "Libera Link" \
             --window-pos 200 120 \
@@ -165,7 +166,7 @@ jobs:
             --app-drop-link 450 190 \
             --no-internet-enable \
             "libera-link-macos.dmg" \
-            "build/Libera Link.app" || true
+            "$MACOS_APP_BUNDLE" || true
 
           test -f libera-link-macos.dmg
 
@@ -192,7 +193,7 @@ jobs:
       - name: Package AppImage (Linux)
         if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
-          cp icons/libera-link.png libera-link.png
+          convert icons/libera-link.png -resize 512x512 libera-link.png
 
           sed 's/^          //' > libera-link.desktop <<'EOF'
           [Desktop Entry]
