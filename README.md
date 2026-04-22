@@ -5,9 +5,9 @@
 This app is part of the Libera family of apps all with a single aim : Run any laser with any control software. This is a key part of that
 aim. 
 
-`Libera Link` finds laser controllers on the network and presents them in a way that is more compatible with your software. Initially it provides an IDN entry point, and makes it compatible with as many open protocols as I can find. 
+`Libera Link` finds laser controllers on the network and presents them in a way that is more compatible with your software. Initially it provides an IDN entry point, and makes it compatible with many open protocols including Ether Dream, Helios USB, LaserCube, AVB and more. 
 
-In future, more entry points will be implemented, and there is a plugin system so more compatibility can be added by third parties. 
+In future, more entry points will be implemented, and the in-built plugin system allows more compatibility to be added by third parties in the future. 
 
 
 ## Build
