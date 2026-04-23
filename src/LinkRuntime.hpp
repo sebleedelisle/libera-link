@@ -18,8 +18,8 @@ struct LinkOptions {
     std::uint32_t latencyMs = 50;
     std::uint32_t maxLatencyMs = 1500;
     bool autoLatency = true;
-    std::string ingesterId;
-    std::unordered_map<std::string, std::string> ingesterOptions;
+    std::string virtualControllerHostId;
+    std::unordered_map<std::string, std::string> virtualControllerHostOptions;
 };
 
 void printUsage(const char* exe);
@@ -69,10 +69,10 @@ struct EndpointSnapshot {
     std::string label;
     std::string id;
     std::string type;
-    std::string ingesterId;
-    std::string ingesterDisplayName;
-    std::string bindingLabel;
-    std::string bindingValue;
+    std::string virtualControllerHostId;
+    std::string virtualControllerHostDisplayName;
+    std::string virtualControllerEndpointLabel;
+    std::string virtualControllerEndpointValue;
     EndpointStatsSnapshot stats;
 };
 
@@ -90,8 +90,8 @@ struct RuntimeSnapshot {
     RuntimeState state = RuntimeState::Stopped;
     std::string statusMessage = "Stopped";
     std::string lastError;
-    std::string activeIngesterId;
-    std::string activeIngesterDisplayName;
+    std::string activeVirtualControllerHostId;
+    std::string activeVirtualControllerHostDisplayName;
     bool stopRequested = false;
     bool hasDiscoveryResults = false;
     std::size_t discoveredControllers = 0;

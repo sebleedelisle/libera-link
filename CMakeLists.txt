@@ -92,8 +92,8 @@ endif()
 
 add_library(libera_link_core STATIC
     src/LinkRuntime.cpp
-    src/ingest/IdnIngester.cpp
-    src/ingest/IngesterRegistry.cpp
+    src/virtual_controller/IdnVirtualControllerHost.cpp
+    src/virtual_controller/VirtualControllerHostRegistry.cpp
     src/LiberaPaths.cpp
 )
 target_include_directories(libera_link_core

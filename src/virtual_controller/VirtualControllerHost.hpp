@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace libera_link::ingest {
+namespace libera_link::virtual_controller {
 
 struct SliceSubmission {
     std::vector<libera::core::LaserPoint> points;
@@ -45,31 +45,31 @@ struct Target {
     std::shared_ptr<TargetSink> sink;
 };
 
-struct StartContext {
+struct VirtualControllerHostContext {
     std::vector<Target> targets;
 };
 
-struct BindingInfo {
+struct VirtualControllerEndpoint {
     std::string targetId;
     std::string label;
     std::string value;
 };
 
-struct FactoryConfig {
+struct VirtualControllerHostConfig {
     std::uint32_t sliceDurationUs = 0;
     std::unordered_map<std::string, std::string> options;
 };
 
-class Ingester {
+class VirtualControllerHost {
 public:
-    virtual ~Ingester() = default;
+    virtual ~VirtualControllerHost() = default;
 
     virtual std::string_view name() const = 0;
     virtual std::string_view displayName() const = 0;
-    virtual bool start(const StartContext& context, std::string& error) = 0;
+    virtual bool start(const VirtualControllerHostContext& context, std::string& error) = 0;
     virtual void stop() = 0;
     virtual bool running() const = 0;
-    virtual std::vector<BindingInfo> bindings() const = 0;
+    virtual std::vector<VirtualControllerEndpoint> endpoints() const = 0;
 };
 
-} // namespace libera_link::ingest
+} // namespace libera_link::virtual_controller

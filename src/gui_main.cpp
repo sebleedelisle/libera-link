@@ -3,7 +3,7 @@
 #include "LiberaPaths.hpp"
 #include "LiberaPluginsWindow.h"
 #include "LiberaWidgets.h"
-#include "ingest/IngesterRegistry.hpp"
+#include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
 #include "fonts/IconsForkAwesome.h"
 #include "imgui.h"
@@ -132,8 +132,8 @@ int main() {
 
     libera_link::LinkRuntime runtime;
     libera_link::LinkOptions linkOptions;
-    if (const auto defaultIngester = libera_link::ingest::defaultIngester()) {
-        linkOptions.ingesterId = defaultIngester->id;
+    if (const auto defaultVirtualControllerHost = libera_link::virtual_controller::defaultVirtualControllerHost()) {
+        linkOptions.virtualControllerHostId = defaultVirtualControllerHost->id;
     }
 
     std::future<bool> scanFuture;
@@ -193,17 +193,17 @@ int main() {
         }
 
         const auto snapshot = runtime.snapshot();
-        const auto availableIngesters = libera_link::ingest::availableIngesters();
-        const auto selectedIngesterIt = std::find_if(
-            availableIngesters.begin(), availableIngesters.end(),
-            [&](const libera_link::ingest::RegistrationInfo& info) {
-                return info.id == linkOptions.ingesterId;
+        const auto availableVirtualControllerHosts = libera_link::virtual_controller::availableVirtualControllerHosts();
+        const auto selectedVirtualControllerHostIt = std::find_if(
+            availableVirtualControllerHosts.begin(), availableVirtualControllerHosts.end(),
+            [&](const libera_link::virtual_controller::VirtualControllerHostInfo& info) {
+                return info.id == linkOptions.virtualControllerHostId;
             });
-        if (linkOptions.ingesterId.empty() || selectedIngesterIt == availableIngesters.end()) {
-            if (const auto defaultIngester = libera_link::ingest::defaultIngester()) {
-                linkOptions.ingesterId = defaultIngester->id;
+        if (linkOptions.virtualControllerHostId.empty() || selectedVirtualControllerHostIt == availableVirtualControllerHosts.end()) {
+            if (const auto defaultVirtualControllerHost = libera_link::virtual_controller::defaultVirtualControllerHost()) {
+                linkOptions.virtualControllerHostId = defaultVirtualControllerHost->id;
             } else {
-                linkOptions.ingesterId.clear();
+                linkOptions.virtualControllerHostId.clear();
             }
         }
 
@@ -334,34 +334,34 @@ int main() {
 
         ImGui::Spacing();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("Ingester");
+        ImGui::TextDisabled("Virtual Controller");
         ImGui::SameLine();
-        if (availableIngesters.empty()) {
+        if (availableVirtualControllerHosts.empty()) {
             ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", "None registered");
         } else {
-            const bool ingesterSelectionDisabled =
+            const bool virtualControllerSelectionDisabled =
                 startInFlight || stopInFlight || scanInFlight || rescanInFlight;
-            if (ingesterSelectionDisabled) {
+            if (virtualControllerSelectionDisabled) {
                 ImGui::BeginDisabled();
             }
 
-            const auto activeIngesterIt = std::find_if(
-                availableIngesters.begin(), availableIngesters.end(),
-                [&](const libera_link::ingest::RegistrationInfo& info) {
-                    return info.id == linkOptions.ingesterId;
+            const auto activeVirtualControllerHostIt = std::find_if(
+                availableVirtualControllerHosts.begin(), availableVirtualControllerHosts.end(),
+                [&](const libera_link::virtual_controller::VirtualControllerHostInfo& info) {
+                    return info.id == linkOptions.virtualControllerHostId;
                 });
-            const std::string preview = activeIngesterIt != availableIngesters.end()
-                ? activeIngesterIt->displayName
-                : linkOptions.ingesterId;
-            if (ImGui::BeginCombo("##ingester", preview.c_str())) {
-                for (const auto& ingester : availableIngesters) {
-                    const bool selected = (ingester.id == linkOptions.ingesterId);
-                    if (ImGui::Selectable(ingester.displayName.c_str(), selected)) {
-                        linkOptions.ingesterId = ingester.id;
+            const std::string preview = activeVirtualControllerHostIt != availableVirtualControllerHosts.end()
+                ? activeVirtualControllerHostIt->displayName
+                : linkOptions.virtualControllerHostId;
+            if (ImGui::BeginCombo("##virtual-controller-host", preview.c_str())) {
+                for (const auto& virtualControllerHost : availableVirtualControllerHosts) {
+                    const bool selected = (virtualControllerHost.id == linkOptions.virtualControllerHostId);
+                    if (ImGui::Selectable(virtualControllerHost.displayName.c_str(), selected)) {
+                        linkOptions.virtualControllerHostId = virtualControllerHost.id;
                         linkSyncPending = true;
                     }
-                    if (!ingester.description.empty() && ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("%s", ingester.description.c_str());
+                    if (!virtualControllerHost.description.empty() && ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("%s", virtualControllerHost.description.c_str());
                     }
                     if (selected) {
                         ImGui::SetItemDefaultFocus();
@@ -370,14 +370,14 @@ int main() {
                 ImGui::EndCombo();
             }
 
-            if (ingesterSelectionDisabled) {
+            if (virtualControllerSelectionDisabled) {
                 ImGui::EndDisabled();
             }
 
-            if (activeIngesterIt != availableIngesters.end() &&
-                !activeIngesterIt->description.empty()) {
+            if (activeVirtualControllerHostIt != availableVirtualControllerHosts.end() &&
+                !activeVirtualControllerHostIt->description.empty()) {
                 ImGui::SameLine();
-                ImGui::TextDisabled("%s", activeIngesterIt->description.c_str());
+                ImGui::TextDisabled("%s", activeVirtualControllerHostIt->description.c_str());
             }
         }
 
@@ -488,11 +488,11 @@ int main() {
                     }
                     if (endpoint) {
                         ImGui::Separator();
-                        if (!endpoint->bindingLabel.empty()) {
-                            ImGui::Text("Endpoint: %s", endpoint->bindingLabel.c_str());
+                        if (!endpoint->virtualControllerEndpointLabel.empty()) {
+                            ImGui::Text("Endpoint: %s", endpoint->virtualControllerEndpointLabel.c_str());
                         }
-                        if (!endpoint->ingesterDisplayName.empty()) {
-                            ImGui::Text("Ingester: %s", endpoint->ingesterDisplayName.c_str());
+                        if (!endpoint->virtualControllerHostDisplayName.empty()) {
+                            ImGui::Text("Virtual Controller: %s", endpoint->virtualControllerHostDisplayName.c_str());
                         }
                         ImGui::Text("Input: %u pps", endpoint->stats.observedInputPointRate);
                         ImGui::Text("Output: %u pps", endpoint->stats.outputPointRate);
@@ -559,12 +559,12 @@ int main() {
                 ImGui::AlignTextToFramePadding();
                 if (endpoint) {
                     const char* endpointText =
-                        !endpoint->bindingValue.empty()
-                            ? endpoint->bindingValue.c_str()
-                            : !endpoint->bindingLabel.empty()
-                                  ? endpoint->bindingLabel.c_str()
-                                  : !endpoint->ingesterDisplayName.empty()
-                                        ? endpoint->ingesterDisplayName.c_str()
+                        !endpoint->virtualControllerEndpointValue.empty()
+                            ? endpoint->virtualControllerEndpointValue.c_str()
+                            : !endpoint->virtualControllerEndpointLabel.empty()
+                                  ? endpoint->virtualControllerEndpointLabel.c_str()
+                                  : !endpoint->virtualControllerHostDisplayName.empty()
+                                        ? endpoint->virtualControllerHostDisplayName.c_str()
                                         : "-";
                     ImGui::TextUnformatted(endpointText);
                 } else {
@@ -685,8 +685,8 @@ int main() {
         const bool linkRunning = snapshot.state == libera_link::RuntimeState::Running ||
                                    snapshot.state == libera_link::RuntimeState::StopRequested;
         const bool linkSelectionMatches = activeControllerIds == targetControllerIds;
-        const bool linkIngesterMatches =
-            !linkRunning || snapshot.activeIngesterId == linkOptions.ingesterId;
+        const bool linkVirtualControllerMatches =
+            !linkRunning || snapshot.activeVirtualControllerHostId == linkOptions.virtualControllerHostId;
 
         if (!scanInFlight && !startInFlight && !stopInFlight) {
             if (rescanInFlight) {
@@ -700,7 +700,7 @@ int main() {
                 }
             } else if (linkSyncPending) {
                 if (linkRunning) {
-                    if (!linkSelectionMatches || !linkIngesterMatches) {
+                    if (!linkSelectionMatches || !linkVirtualControllerMatches) {
                         launchStop();
                     } else {
                         linkSyncPending = false;

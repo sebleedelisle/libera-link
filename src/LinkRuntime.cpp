@@ -1,7 +1,7 @@
 #include "LinkRuntime.hpp"
 #include "LiberaPaths.hpp"
-#include "ingest/IdnIngester.hpp"
-#include "ingest/IngesterRegistry.hpp"
+#include "virtual_controller/IdnVirtualControllerHost.hpp"
+#include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
 #include "libera/System.hpp"
 #include "libera/core/LaserController.hpp"
@@ -107,15 +107,16 @@ std::string describeController(const libera::core::ControllerInfo& info) {
 }
 
 void printUsageImpl(const char* exe, std::ostream& out) {
-    ingest::ensureBuiltInIdnIngesterLinked();
-    const auto defaultIngester = ingest::defaultIngester();
-    const auto availableIngesters = ingest::availableIngesters();
+    virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
+    const auto defaultVirtualControllerHost = virtual_controller::defaultVirtualControllerHost();
+    const auto availableVirtualControllerHosts = virtual_controller::availableVirtualControllerHosts();
     out << "Usage: " << exe << " [options]\n"
         << "  --discovery-timeout-ms <ms>    Libera discovery wait time (default 5000)\n"
         << "  --max-dacs <count>             Limit number of linked controllers (default all)\n"
-        << "  --ingester <id>                Ingester to run (default "
-        << (defaultIngester ? defaultIngester->id : "none") << ")\n"
-        << "  --ingester-opt <key=value>     Pass a custom option to the selected ingester\n"
+        << "  --virtual-controller <id>      Virtual controller to expose (default "
+        << (defaultVirtualControllerHost ? defaultVirtualControllerHost->id : "none") << ")\n"
+        << "  --virtual-controller-opt <key=value>\n"
+        << "                                  Pass a custom option to the selected virtual controller\n"
         << "  --slice-us <us>                Driver slice duration in microseconds (default 15000)\n"
         << "  --max-queue-points <count>     Max queued translated points per controller (default 300000)\n"
         << "  --latency-ms <ms>              Target buffered latency in milliseconds (default 50)\n"
@@ -123,9 +124,9 @@ void printUsageImpl(const char* exe, std::ostream& out) {
         << "  --no-auto-latency              Disable automatic latency increase on underrun\n"
         << "  --help                         Show this message\n";
 
-    if (!availableIngesters.empty()) {
-        out << "\nAvailable ingesters:\n";
-        for (const auto& info : availableIngesters) {
+    if (!availableVirtualControllerHosts.empty()) {
+        out << "\nAvailable virtual controllers:\n";
+        for (const auto& info : availableVirtualControllerHosts) {
             out << "  " << info.id << "  " << info.displayName;
             if (info.defaultSelection) {
                 out << " [default]";
@@ -163,7 +164,7 @@ bool parseKeyValue(std::string_view text, std::string& key, std::string& value) 
     return true;
 }
 
-class LiberaTarget final : public ingest::TargetSink {
+class LiberaTarget final : public virtual_controller::TargetSink {
 public:
     struct StatsSnapshot {
         std::uint64_t receivedSlices = 0;
@@ -188,7 +189,7 @@ public:
     };
 
     LiberaTarget(std::shared_ptr<libera::core::LaserController> controller,
-                 ingest::TargetInfo info,
+                 virtual_controller::TargetInfo info,
                  std::size_t maxQueuedPoints,
                  std::uint32_t latencyMs,
                  std::uint32_t maxLatencyMs,
@@ -222,11 +223,11 @@ public:
         }
     }
 
-    const ingest::TargetInfo& targetInfo() const override {
+    const virtual_controller::TargetInfo& targetInfo() const override {
         return info_;
     }
 
-    void submitContinuous(ingest::SliceSubmission submission) override {
+    void submitContinuous(virtual_controller::SliceSubmission submission) override {
         const std::size_t pointCount = submission.points.size();
         if (pointCount == 0) {
             return;
@@ -264,7 +265,7 @@ public:
             inferCommandedPointRate(pointCount, static_cast<double>(submission.durationUs))));
     }
 
-    void replaceFrame(ingest::FrameSubmission submission) override {
+    void replaceFrame(virtual_controller::FrameSubmission submission) override {
         if (submission.slices.empty()) {
             return;
         }
@@ -381,18 +382,18 @@ public:
         return isAwaitingInputLocked(std::chrono::steady_clock::now(), idleThreshold);
     }
 
-    EndpointSnapshot snapshot(std::string_view ingesterId,
-                              std::string_view ingesterDisplayName,
-                              const ingest::BindingInfo* binding) const {
+    EndpointSnapshot snapshot(std::string_view virtualControllerHostId,
+                              std::string_view virtualControllerHostDisplayName,
+                              const virtual_controller::VirtualControllerEndpoint* endpoint) const {
         EndpointSnapshot snapshot;
         snapshot.label = info_.label;
         snapshot.id = info_.id;
         snapshot.type = info_.type;
-        snapshot.ingesterId = std::string(ingesterId);
-        snapshot.ingesterDisplayName = std::string(ingesterDisplayName);
-        if (binding != nullptr) {
-            snapshot.bindingLabel = binding->label;
-            snapshot.bindingValue = binding->value;
+        snapshot.virtualControllerHostId = std::string(virtualControllerHostId);
+        snapshot.virtualControllerHostDisplayName = std::string(virtualControllerHostDisplayName);
+        if (endpoint != nullptr) {
+            snapshot.virtualControllerEndpointLabel = endpoint->label;
+            snapshot.virtualControllerEndpointValue = endpoint->value;
         }
 
         const auto stats = getStatsSnapshot();
@@ -731,7 +732,7 @@ private:
     }
 
     std::shared_ptr<libera::core::LaserController> controller_;
-    ingest::TargetInfo info_;
+    virtual_controller::TargetInfo info_;
     unsigned maxPointRateValue_;
     std::size_t maxQueuedPoints_;
     std::atomic<std::uint32_t> currentPointRate_{30000};
@@ -856,12 +857,12 @@ std::vector<DiscoveredControllerSnapshot> buildDiscoveredControllerSnapshots(
     return snapshots;
 }
 
-const ingest::BindingInfo* bindingForTarget(
-    const std::vector<ingest::BindingInfo>& bindings,
+const virtual_controller::VirtualControllerEndpoint* endpointForTarget(
+    const std::vector<virtual_controller::VirtualControllerEndpoint>& endpoints,
     const std::string& targetId) {
-    for (const auto& binding : bindings) {
-        if (binding.targetId == targetId) {
-            return &binding;
+    for (const auto& endpoint : endpoints) {
+        if (endpoint.targetId == targetId) {
+            return &endpoint;
         }
     }
     return nullptr;
@@ -878,12 +879,12 @@ struct LinkRuntime::Impl {
     std::vector<DiscoveredControllerSnapshot> discovered;
 
     std::unique_ptr<libera::System> liberaSystem;
-    std::unique_ptr<ingest::Ingester> ingester;
+    std::unique_ptr<virtual_controller::VirtualControllerHost> virtualControllerHost;
     std::thread monitorThread;
     std::vector<std::shared_ptr<LiberaTarget>> targets;
-    std::vector<ingest::BindingInfo> bindings;
-    std::string activeIngesterId;
-    std::string activeIngesterDisplayName;
+    std::vector<virtual_controller::VirtualControllerEndpoint> endpoints;
+    std::string activeVirtualControllerHostId;
+    std::string activeVirtualControllerHostDisplayName;
 
     std::atomic<bool> stopRequested{false};
     LogSink logger = std::make_shared<RuntimeLogger>();
@@ -900,7 +901,7 @@ void printUsage(const char* exe) {
 }
 
 ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
-    ingest::ensureBuiltInIdnIngesterLinked();
+    virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help") {
@@ -917,21 +918,21 @@ ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
             return ParseResult::Error;
         }
 
-        if (arg == "--ingester") {
-            options.ingesterId = argv[i + 1];
+        if (arg == "--virtual-controller") {
+            options.virtualControllerHostId = argv[i + 1];
             ++i;
             continue;
         }
 
-        if (arg == "--ingester-opt") {
+        if (arg == "--virtual-controller-opt") {
             std::string key;
             std::string value;
             if (!parseKeyValue(argv[i + 1], key, value)) {
-                std::cerr << "Invalid ingester option for " << arg
+                std::cerr << "Invalid virtual controller host option for " << arg
                           << ": expected key=value, got " << argv[i + 1] << "\n";
                 return ParseResult::Error;
             }
-            options.ingesterOptions[key] = value;
+            options.virtualControllerHostOptions[key] = value;
             ++i;
             continue;
         }
@@ -971,8 +972,8 @@ ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
         options.maxLatencyMs = options.latencyMs;
     }
 
-    if (!options.ingesterId.empty() && !ingest::findIngester(options.ingesterId)) {
-        std::cerr << "Unknown ingester: " << options.ingesterId << "\n";
+    if (!options.virtualControllerHostId.empty() && !virtual_controller::findVirtualControllerHost(options.virtualControllerHostId)) {
+        std::cerr << "Unknown virtual controller host: " << options.virtualControllerHostId << "\n";
         printUsage(argv[0]);
         return ParseResult::Error;
     }
@@ -1075,11 +1076,11 @@ bool LinkRuntime::start(const LinkOptions& options) {
 
 bool LinkRuntime::start(const LinkOptions& options,
                           const std::set<std::string>& selectedControllerIds) {
-    const auto selectedIngesterInfo = [&]() -> std::optional<ingest::RegistrationInfo> {
-        if (!options.ingesterId.empty()) {
-            return ingest::findIngester(options.ingesterId);
+    const auto selectedVirtualControllerHostInfo = [&]() -> std::optional<virtual_controller::VirtualControllerHostInfo> {
+        if (!options.virtualControllerHostId.empty()) {
+            return virtual_controller::findVirtualControllerHost(options.virtualControllerHostId);
         }
-        return ingest::defaultIngester();
+        return virtual_controller::defaultVirtualControllerHost();
     }();
 
     {
@@ -1092,17 +1093,17 @@ bool LinkRuntime::start(const LinkOptions& options,
         }
         impl_->state = RuntimeState::Starting;
         impl_->statusMessage = "Discovering controllers...";
-        impl_->activeIngesterId.clear();
-        impl_->activeIngesterDisplayName.clear();
+        impl_->activeVirtualControllerHostId.clear();
+        impl_->activeVirtualControllerHostDisplayName.clear();
     }
 
     impl_->logger->clear();
     impl_->stopRequested.store(false, std::memory_order_relaxed);
 
-    if (!selectedIngesterInfo) {
-        const std::string error = options.ingesterId.empty()
-                                      ? "No ingesters are registered."
-                                      : "Unknown ingester \"" + options.ingesterId + "\".";
+    if (!selectedVirtualControllerHostInfo) {
+        const std::string error = options.virtualControllerHostId.empty()
+                                      ? "No virtual controller hosts are registered."
+                                      : "Unknown virtual controller host \"" + options.virtualControllerHostId + "\".";
         impl_->setState(RuntimeState::Failed, error);
         impl_->logger->error(error);
         return false;
@@ -1113,11 +1114,11 @@ bool LinkRuntime::start(const LinkOptions& options,
 
     if (selectedControllerIds.empty()) {
         std::ostringstream oss;
-        oss << "Starting Libera Link via " << selectedIngesterInfo->displayName;
+        oss << "Starting Libera Link via " << selectedVirtualControllerHostInfo->displayName;
         impl_->logger->info(oss.str());
     } else {
         std::ostringstream oss;
-        oss << "Starting Libera Link via " << selectedIngesterInfo->displayName
+        oss << "Starting Libera Link via " << selectedVirtualControllerHostInfo->displayName
             << " for " << selectedControllerIds.size() << " selected controller(s)";
         impl_->logger->info(oss.str());
     }
@@ -1206,7 +1207,7 @@ bool LinkRuntime::start(const LinkOptions& options,
             continue;
         }
 
-        ingest::TargetInfo targetInfo;
+        virtual_controller::TargetInfo targetInfo;
         targetInfo.id = info->idValue();
         targetInfo.label = info->labelValue();
         targetInfo.type = info->type();
@@ -1241,29 +1242,29 @@ bool LinkRuntime::start(const LinkOptions& options,
         return false;
     }
 
-    ingest::StartContext startContext;
+    virtual_controller::VirtualControllerHostContext startContext;
     startContext.targets.reserve(targets.size());
     for (const auto& target : targets) {
-        startContext.targets.push_back(ingest::Target{target});
+        startContext.targets.push_back(virtual_controller::Target{target});
     }
 
-    ingest::FactoryConfig ingesterConfig;
-    ingesterConfig.sliceDurationUs = options.sliceDurationUs;
-    ingesterConfig.options = options.ingesterOptions;
+    virtual_controller::VirtualControllerHostConfig virtualControllerHostConfig;
+    virtualControllerHostConfig.sliceDurationUs = options.sliceDurationUs;
+    virtualControllerHostConfig.options = options.virtualControllerHostOptions;
 
     std::string startupError;
-    auto ingester = ingest::createIngester(selectedIngesterInfo->id, ingesterConfig, startupError);
-    if (!ingester) {
+    auto virtualControllerHost = virtual_controller::createVirtualControllerHost(selectedVirtualControllerHostInfo->id, virtualControllerHostConfig, startupError);
+    if (!virtualControllerHost) {
         targets.clear();
         impl_->setState(RuntimeState::Failed, startupError);
         impl_->logger->error(startupError);
         return false;
     }
 
-    if (!ingester->start(startContext, startupError)) {
+    if (!virtualControllerHost->start(startContext, startupError)) {
         if (startupError.empty()) {
-            startupError = std::string(selectedIngesterInfo->displayName) +
-                " ingester failed to start.";
+            startupError = std::string(selectedVirtualControllerHostInfo->displayName) +
+                " virtual controller host failed to start.";
         }
         targets.clear();
         impl_->setState(RuntimeState::Failed, startupError);
@@ -1272,35 +1273,35 @@ bool LinkRuntime::start(const LinkOptions& options,
     }
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
-        ingester->stop();
+        virtualControllerHost->stop();
         targets.clear();
         impl_->setState(RuntimeState::Stopped, "Stopped");
         impl_->logger->info("Link start cancelled.");
         return false;
     }
 
-    auto bindings = ingester->bindings();
-    const std::string activeIngesterId = selectedIngesterInfo->id;
-    const std::string activeIngesterDisplayName = std::string(ingester->displayName());
+    auto endpoints = virtualControllerHost->endpoints();
+    const std::string activeVirtualControllerHostId = selectedVirtualControllerHostInfo->id;
+    const std::string activeVirtualControllerHostDisplayName = std::string(virtualControllerHost->displayName());
     for (const auto& target : targets) {
-        const auto* binding = bindingForTarget(bindings, target->targetInfo().id);
+        const auto* endpoint = endpointForTarget(endpoints, target->targetInfo().id);
         std::ostringstream oss;
         oss << "Linked " << target->targetInfo().label
             << " [" << target->targetInfo().type << ":" << target->targetInfo().id << "]"
-            << " via " << activeIngesterDisplayName;
-        if (binding != nullptr && !binding->label.empty()) {
-            oss << " -> " << binding->label;
+            << " via " << activeVirtualControllerHostDisplayName;
+        if (endpoint != nullptr && !endpoint->label.empty()) {
+            oss << " -> " << endpoint->label;
         }
         impl_->logger->info(oss.str());
     }
 
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->ingester = std::move(ingester);
+        impl_->virtualControllerHost = std::move(virtualControllerHost);
         impl_->targets = std::move(targets);
-        impl_->bindings = std::move(bindings);
-        impl_->activeIngesterId = activeIngesterId;
-        impl_->activeIngesterDisplayName = activeIngesterDisplayName;
+        impl_->endpoints = std::move(endpoints);
+        impl_->activeVirtualControllerHostId = activeVirtualControllerHostId;
+        impl_->activeVirtualControllerHostDisplayName = activeVirtualControllerHostDisplayName;
         impl_->state = RuntimeState::Running;
         impl_->statusMessage = "Running";
     }
@@ -1343,26 +1344,26 @@ void LinkRuntime::stop() {
         monitorThread.join();
     }
 
-    std::unique_ptr<ingest::Ingester> ingester;
+    std::unique_ptr<virtual_controller::VirtualControllerHost> virtualControllerHost;
     std::vector<std::shared_ptr<LiberaTarget>> targets;
     bool hadActiveResources = false;
 
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        hadActiveResources = impl_->ingester != nullptr ||
+        hadActiveResources = impl_->virtualControllerHost != nullptr ||
                              !impl_->targets.empty() ||
                              impl_->state != RuntimeState::Stopped;
-        ingester = std::move(impl_->ingester);
+        virtualControllerHost = std::move(impl_->virtualControllerHost);
         targets = std::move(impl_->targets);
-        impl_->bindings.clear();
-        impl_->activeIngesterId.clear();
-        impl_->activeIngesterDisplayName.clear();
+        impl_->endpoints.clear();
+        impl_->activeVirtualControllerHostId.clear();
+        impl_->activeVirtualControllerHostDisplayName.clear();
         impl_->state = RuntimeState::Stopped;
         impl_->statusMessage = "Stopped";
     }
 
-    if (ingester) {
-        ingester->stop();
+    if (virtualControllerHost) {
+        virtualControllerHost->stop();
     }
     targets.clear();
 
@@ -1379,8 +1380,8 @@ RuntimeSnapshot LinkRuntime::snapshot() const {
         snapshot.state = impl_->state;
         snapshot.statusMessage = impl_->statusMessage;
         snapshot.stopRequested = impl_->stopRequested.load(std::memory_order_relaxed);
-        snapshot.activeIngesterId = impl_->activeIngesterId;
-        snapshot.activeIngesterDisplayName = impl_->activeIngesterDisplayName;
+        snapshot.activeVirtualControllerHostId = impl_->activeVirtualControllerHostId;
+        snapshot.activeVirtualControllerHostDisplayName = impl_->activeVirtualControllerHostDisplayName;
         snapshot.hasDiscoveryResults = impl_->hasDiscoveryResults;
         snapshot.discoveredControllers = impl_->discoveredControllers;
         snapshot.discovered = impl_->discovered;
@@ -1388,9 +1389,9 @@ RuntimeSnapshot LinkRuntime::snapshot() const {
         snapshot.endpoints.reserve(impl_->targets.size());
         for (const auto& target : impl_->targets) {
             snapshot.endpoints.push_back(target->snapshot(
-                impl_->activeIngesterId,
-                impl_->activeIngesterDisplayName,
-                bindingForTarget(impl_->bindings, target->targetInfo().id)));
+                impl_->activeVirtualControllerHostId,
+                impl_->activeVirtualControllerHostDisplayName,
+                endpointForTarget(impl_->endpoints, target->targetInfo().id)));
         }
     }
 

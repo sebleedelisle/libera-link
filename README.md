@@ -1,87 +1,77 @@
 # Libera Link
 
-## The Universal Translator for Lasers. 
+Libera Link is a translator app for laser controllers. It finds controllers
+through Libera, then exposes them as software-facing virtual controllers that
+other laser software can talk to.
 
-This app is part of the Libera family of apps all with a single aim : Run any laser with any control software. This is a key part of that
-aim. 
+The first built-in virtual controller is OpenIDN / IDN. That means non-IDN
+controllers such as Ether Dream, Helios USB, LaserCube, AVB, and plugin-backed
+controllers can be made visible to IDN clients.
 
-`Libera Link` finds laser controllers (either on the network, connected via USB or sound interfaces) and presents them in a way that is more compatible with your software. Initially it provides an IDN entry point, and makes it compatible with many open protocols including Ether Dream, Helios USB, LaserCube, AVB and more. 
+## Using The App
 
-In future, more entry points will be implemented, and the in-built plugin system allows more compatibility to be added by third parties in the future. 
+Start Libera Link, wait for the controller scan to finish, then enable the
+controllers you want to link. The app will start the selected virtual controller
+and show one active endpoint per enabled controller.
 
+The main window shows:
 
-## Build
+- discovered controllers
+- whether each controller can be linked
+- the selected virtual controller
+- active endpoint IDs
+- input/output point rates
+- buffering, underrun, and dropped-point counters
+- recent runtime logs
+
+Already-IDN Helios network controllers are skipped automatically because they
+already expose the protocol Libera Link would provide for them.
+
+## Virtual Controllers
+
+A virtual controller is the software-facing side of Libera Link. Its host
+presents linked Libera controllers as something another laser-control program
+can talk to.
+
+The built-in virtual controller is:
+
+- `idn`: exposes linked controllers as OpenIDN / IDN services.
+
+More virtual controller hosts can be added in code. See
+[Writing a virtual controller host](docs/virtual-controller-hosts.md).
+
+## Command Line
+
+The GUI is the normal way to use Libera Link, but the CLI can run the same link
+runtime:
 
 ```bash
-cmake -S . -B build
-cmake --build build -j
-```
-
-Preferred preset-based builds:
-
-```bash
-cmake --preset release
-cmake --build --preset release --parallel
-```
-
-`LIBERA_LINK_OPENIDN_LINK_MODE` controls Link-specific OpenIDN behavior:
-
-- `ON` (default): enables Libera Link OpenIDN behavior paths.
-- `OFF`: unsupported by the vendored OpenIDN subset.
-
-## CI / Release
-
-Cross-platform GitHub Actions CI, signing, and release packaging are configured in
-[`.github/workflows/build.yml`](.github/workflows/build.yml).
-
-Release setup and required GitHub secrets/variables are documented in
-[`docs/ci-release.md`](docs/ci-release.md).
-
-## Run
-
-```bash
-./build/libera_link
+./build/libera_link --virtual-controller idn --discovery-timeout-ms 8000 --max-dacs 4
 ```
 
 Useful options:
 
-```bash
-./build/libera_link --ingester idn --discovery-timeout-ms 8000 --max-dacs 4
-```
+- `--virtual-controller <id>` selects the virtual controller to expose.
+- `--virtual-controller-opt key=value` passes custom options to the selected
+  virtual controller.
+- `--max-dacs <count>` limits how many discovered controllers are linked.
+- `--latency-ms <ms>` sets the starting target buffer latency.
+- `--no-auto-latency` disables automatic latency increases after underruns.
 
-Pass custom ingester settings through repeated `--ingester-opt key=value` flags.
+Run `./build/libera_link --help` for the full list.
 
-## Notes
+## Safety
 
-- Streaming to hardware uses a Libera callback-backed queue.
-- The built-in `idn` ingester is registered by default and exposes controllers as OpenIDN / IDN services.
-- Already-IDN Helios network DACs are skipped automatically (only non-IDN DACs are linked).
+Libera Link streams live laser output to real hardware. Use appropriate safety
+procedures, low power during setup, and verify your projection path before
+enabling output.
 
-## Custom Ingesters
+## Developer Docs
 
-Custom ingesters can be linked into `libera_link_core` by implementing
-`libera_link::ingest::Ingester` and registering a factory:
-
-```cpp
-#include "ingest/IngesterRegistry.hpp"
-
-using namespace libera_link::ingest;
-
-static IngesterRegistrar gCustomIngester({
-    {
-        "custom",
-        "Custom",
-        "Expose Libera Link through a custom ingress protocol.",
-        false,
-    },
-    [](const FactoryConfig& config) -> std::unique_ptr<Ingester> {
-        return std::make_unique<MyCustomIngester>(config);
-    },
-});
-```
-
-Once linked in, the ingester appears in the GUI selector and can be chosen from
-the CLI with `--ingester custom`.
+- [Internals](docs/internals.md): architecture, build notes, and runtime flow.
+- [Writing a virtual controller host](docs/virtual-controller-hosts.md):
+  pseudo-code for adding a new software-facing controller.
+- [CI and release](docs/ci-release.md): packaging, signing, and release setup.
 
 ## Licensing
 

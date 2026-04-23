@@ -1,6 +1,6 @@
-#include "ingest/IdnIngester.hpp"
+#include "virtual_controller/IdnVirtualControllerHost.hpp"
 
-#include "ingest/IngesterRegistry.hpp"
+#include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
 #include "output/V1LaproGraphOut.hpp"
 #include "server/IDNLaproService.hpp"
@@ -19,21 +19,21 @@
 #include <utility>
 #include <vector>
 
-namespace libera_link::ingest {
+namespace libera_link::virtual_controller {
 namespace {
 
 using libera::core::LaserPoint;
 using namespace std::chrono_literals;
 
-IngesterRegistrar gIdnIngesterRegistrar({
+VirtualControllerHostRegistrar gIdnVirtualControllerHostRegistrar({
     {
         "idn",
         "OpenIDN",
         "Expose linked controllers as OpenIDN / IDN services.",
         true,
     },
-    [](const FactoryConfig& config) {
-        return std::make_unique<IdnIngester>(config.sliceDurationUs);
+    [](const VirtualControllerHostConfig& config) {
+        return std::make_unique<IdnVirtualControllerHost>(config.sliceDurationUs);
     },
 });
 
@@ -343,42 +343,42 @@ void stopSessions(std::vector<std::unique_ptr<IdnTargetSession>>& sessions) {
 
 } // namespace
 
-void ensureBuiltInIdnIngesterLinked() {}
+void ensureBuiltInIdnVirtualControllerHostLinked() {}
 
-struct IdnIngester::Impl {
+struct IdnVirtualControllerHost::Impl {
     std::unique_ptr<SockIDNServer> server;
     std::thread serverThread;
     std::vector<std::unique_ptr<IdnTargetSession>> sessions;
     std::atomic<bool> active{false};
 };
 
-IdnIngester::IdnIngester(std::uint32_t sliceDurationUs)
+IdnVirtualControllerHost::IdnVirtualControllerHost(std::uint32_t sliceDurationUs)
     : impl_(std::make_unique<Impl>())
     , sliceDurationUs_(sliceDurationUs) {}
 
-IdnIngester::~IdnIngester() {
+IdnVirtualControllerHost::~IdnVirtualControllerHost() {
     stop();
 }
 
-std::string_view IdnIngester::name() const {
+std::string_view IdnVirtualControllerHost::name() const {
     return "idn";
 }
 
-std::string_view IdnIngester::displayName() const {
+std::string_view IdnVirtualControllerHost::displayName() const {
     return "OpenIDN";
 }
 
-bool IdnIngester::start(const StartContext& context, std::string& error) {
+bool IdnVirtualControllerHost::start(const VirtualControllerHostContext& context, std::string& error) {
     if (!impl_) {
-        error = "IDN ingester not initialized.";
+        error = "IDN virtual controller host not initialized.";
         return false;
     }
     if (running()) {
-        error = "IDN ingester is already running.";
+        error = "IDN virtual controller host is already running.";
         return false;
     }
 
-    bindings_.clear();
+    endpoints_.clear();
 
     LLNode<ServiceNode>* firstService = nullptr;
     std::vector<std::unique_ptr<IdnTargetSession>> sessions;
@@ -404,11 +404,11 @@ bool IdnIngester::start(const StartContext& context, std::string& error) {
         session->linkService(&firstService);
         session->start();
 
-        BindingInfo binding;
-        binding.targetId = target.sink->targetInfo().id;
-        binding.label = "IDN service " + std::to_string(serviceIdRaw);
-        binding.value = std::to_string(serviceIdRaw);
-        bindings_.push_back(std::move(binding));
+        VirtualControllerEndpoint endpoint;
+        endpoint.targetId = target.sink->targetInfo().id;
+        endpoint.label = "IDN service " + std::to_string(serviceIdRaw);
+        endpoint.value = std::to_string(serviceIdRaw);
+        endpoints_.push_back(std::move(endpoint));
         sessions.push_back(std::move(session));
         ++startedTargets;
     }
@@ -431,7 +431,7 @@ bool IdnIngester::start(const StartContext& context, std::string& error) {
             serverThread.join();
         }
         stopSessions(sessions);
-        bindings_.clear();
+        endpoints_.clear();
         error = startupError;
         return false;
     }
@@ -443,7 +443,7 @@ bool IdnIngester::start(const StartContext& context, std::string& error) {
     return true;
 }
 
-void IdnIngester::stop() {
+void IdnVirtualControllerHost::stop() {
     if (!impl_) {
         return;
     }
@@ -461,15 +461,15 @@ void IdnIngester::stop() {
     }
 
     stopSessions(sessions);
-    bindings_.clear();
+    endpoints_.clear();
 }
 
-bool IdnIngester::running() const {
+bool IdnVirtualControllerHost::running() const {
     return impl_ && impl_->active.load(std::memory_order_relaxed);
 }
 
-std::vector<BindingInfo> IdnIngester::bindings() const {
-    return bindings_;
+std::vector<VirtualControllerEndpoint> IdnVirtualControllerHost::endpoints() const {
+    return endpoints_;
 }
 
-} // namespace libera_link::ingest
+} // namespace libera_link::virtual_controller

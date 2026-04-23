@@ -1,0 +1,228 @@
+# Writing a Virtual Controller Host
+
+A virtual controller host presents linked Libera controllers to external
+laser software. It receives control data from that software and submits
+normalized Libera points to linked controllers.
+
+This is the opposite side of a Libera controller backend:
+
+- a controller backend talks to hardware
+- a virtual controller host talks to software that wants to control the hardware
+
+## The Mental Model
+
+A virtual controller host should answer three questions:
+
+1. How does external software see or address linked controllers?
+2. How does external control data become `libera::core::LaserPoint` values?
+3. Is the external data stream-like, frame-like, or both?
+
+The virtual controller host should not discover DACs, connect hardware, or
+implement Libera's output scheduler. `LinkRuntime` already does that.
+
+## Main Types
+
+The current API lives in [VirtualControllerHost.hpp](../src/virtual_controller/VirtualControllerHost.hpp).
+
+- `VirtualControllerHost`: lifecycle object for one software-facing controller family.
+- `TargetSink`: a linked output target that accepts points or frames.
+- `SliceSubmission`: one timed batch of normalized laser points.
+- `FrameSubmission`: a whole frame expressed as one or more slices.
+- `VirtualControllerEndpoint`: user-facing mapping from a target to protocol-specific endpoint data.
+- `VirtualControllerHostConfig`: global options passed to the virtual controller host factory.
+
+## Minimal Continuous Host
+
+Use `submitContinuous()` when the protocol provides a stream of timed point
+batches.
+
+```cpp
+class MyVirtualControllerHost final : public libera_link::virtual_controller::VirtualControllerHost {
+public:
+    explicit MyVirtualControllerHost(const VirtualControllerHostConfig& config)
+        : sliceDurationUs(config.sliceDurationUs) {}
+
+    std::string_view name() const override {
+        return "my-controller";
+    }
+
+    std::string_view displayName() const override {
+        return "My Controller";
+    }
+
+    bool start(const VirtualControllerHostContext& context, std::string& error) override {
+        if (context.targets.empty()) {
+            error = "No targets available.";
+            return false;
+        }
+
+        targets = context.targets;
+        runningFlag = true;
+        worker = std::thread([this] { protocolLoop(); });
+        return true;
+    }
+
+    void stop() override {
+        runningFlag = false;
+        closeProtocolSocket();
+        if (worker.joinable()) {
+            worker.join();
+        }
+        targets.clear();
+        currentEndpoints.clear();
+    }
+
+    bool running() const override {
+        return runningFlag;
+    }
+
+    std::vector<VirtualControllerEndpoint> endpoints() const override {
+        return currentEndpoints;
+    }
+
+private:
+    void protocolLoop() {
+        while (runningFlag) {
+            ExternalPacket packet = receiveExternalPacket();
+            Target* target = lookupTarget(packet.destination);
+            if (target == nullptr || !target->sink) {
+                continue;
+            }
+
+            SliceSubmission submission;
+            submission.durationUs = packet.durationUs;
+            submission.effectivePointRate = packet.pointRate;
+            submission.points = decodeExternalPoints(packet);
+
+            target->sink->submitContinuous(std::move(submission));
+        }
+    }
+
+    std::uint32_t sliceDurationUs = 15000;
+    std::atomic<bool> runningFlag{false};
+    std::thread worker;
+    std::vector<Target> targets;
+    std::vector<VirtualControllerEndpoint> currentEndpoints;
+};
+```
+
+## Minimal Frame Host
+
+Use `replaceFrame()` when the external protocol sends a complete frame that
+should replace what is currently queued for that target.
+
+```cpp
+void MyVirtualControllerHost::handleFramePacket(const ExternalFrame& frame) {
+    Target* target = lookupTarget(frame.destination);
+    if (target == nullptr || !target->sink) {
+        return;
+    }
+
+    SliceSubmission slice;
+    slice.durationUs = frame.durationUs;
+    slice.effectivePointRate = frame.pointRate;
+    slice.points = decodeFramePoints(frame);
+
+    FrameSubmission submission;
+    submission.clearTransportPrefetch = true;
+    submission.slices.push_back(std::move(slice));
+
+    target->sink->replaceFrame(std::move(submission));
+}
+```
+
+`clearTransportPrefetch` is useful when the new frame should replace pending
+prefetched callback data in the Libera controller path.
+
+## Registration
+
+Source-linked virtual controller hosts register a factory with
+`VirtualControllerHostRegistrar`.
+
+```cpp
+#include "virtual_controller/VirtualControllerHostRegistry.hpp"
+
+using namespace libera_link::virtual_controller;
+
+static VirtualControllerHostRegistrar gMyVirtualControllerHost({
+    {
+        "my-controller",
+        "My Controller",
+        "Expose linked controllers through My Controller.",
+        false,
+    },
+    [](const VirtualControllerHostConfig& config) -> std::unique_ptr<VirtualControllerHost> {
+        return std::make_unique<MyVirtualControllerHost>(config);
+    },
+});
+```
+
+Once the object file is linked into `libera_link_core`, the virtual controller
+host appears in the GUI selector and can be selected from the CLI:
+
+```bash
+./build/libera_link --virtual-controller my-controller
+```
+
+## Endpoint Information
+
+Endpoints explain how the external protocol exposes each linked target. For IDN,
+this is the service ID.
+
+```cpp
+bool MyVirtualControllerHost::start(const VirtualControllerHostContext& context, std::string& error) {
+    currentEndpoints.clear();
+
+    for (std::size_t i = 0; i < context.targets.size(); ++i) {
+        const auto& target = context.targets[i];
+        if (!target.sink) {
+            continue;
+        }
+
+        const std::string endpointValue = allocateProtocolEndpoint(i);
+
+        VirtualControllerEndpoint exposedEndpoint;
+        exposedEndpoint.targetId = target.sink->targetInfo().id;
+        exposedEndpoint.label = "My Controller endpoint";
+        exposedEndpoint.value = endpointValue;
+        currentEndpoints.push_back(std::move(exposedEndpoint));
+    }
+
+    startProtocolServer();
+    return true;
+}
+```
+
+## Lifecycle
+
+```text
+app starts
++-- LinkRuntime discovers and connects controllers
++-- LinkRuntime creates one TargetSink per controller
++-- createVirtualControllerHost(id, config)
++-- host.start(context)
+|   +-- store targets
+|   +-- expose protocol endpoints
+|   +-- start protocol/network threads
+|   +-- publish endpoints
++-- external protocol submits slices or frames
++-- LinkRuntime drains target queues into Libera callbacks
++-- host.stop()
+    +-- stop protocol/network threads
+    +-- reset protocol state
+    +-- release target references
+```
+
+## Practical Rules
+
+- Treat `TargetSink` as the only way to send points to hardware.
+- Keep protocol parsing and hardware output separate.
+- Call `reset()` when your protocol session closes or changes ownership.
+- Provide useful `VirtualControllerEndpoint`; it is what users see in logs and the GUI.
+- Clamp and validate protocol data before constructing `LaserPoint` values.
+- Keep `stop()` prompt. It may be called while network or protocol threads are active.
+
+The current API is intentionally small. If a virtual controller host needs
+backpressure, structured options, or richer events, that should be added to the
+shared virtual controller host contract rather than hidden inside one virtual
+controller host implementation.
