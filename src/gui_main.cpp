@@ -491,6 +491,21 @@ int main() {
                         if (!endpoint->virtualControllerEndpointLabel.empty()) {
                             ImGui::Text("Endpoint: %s", endpoint->virtualControllerEndpointLabel.c_str());
                         }
+                        if (!endpoint->virtualControllerEndpointProtocol.empty()) {
+                            ImGui::Text("Protocol: %s", endpoint->virtualControllerEndpointProtocol.c_str());
+                        }
+                        if (!endpoint->virtualControllerEndpointTransport.empty()) {
+                            if (!endpoint->virtualControllerEndpointAddress.empty() &&
+                                endpoint->virtualControllerEndpointPort > 0) {
+                                ImGui::Text("Transport: %s %s:%u",
+                                            endpoint->virtualControllerEndpointTransport.c_str(),
+                                            endpoint->virtualControllerEndpointAddress.c_str(),
+                                            endpoint->virtualControllerEndpointPort);
+                            } else {
+                                ImGui::Text("Transport: %s",
+                                            endpoint->virtualControllerEndpointTransport.c_str());
+                            }
+                        }
                         if (!endpoint->virtualControllerHostDisplayName.empty()) {
                             ImGui::Text("Virtual Controller: %s", endpoint->virtualControllerHostDisplayName.c_str());
                         }

@@ -28,7 +28,10 @@ The current API lives in [VirtualControllerHost.hpp](../src/virtual_controller/V
 - `TargetSink`: a linked output target that accepts points or frames.
 - `SliceSubmission`: one timed batch of normalized laser points.
 - `FrameSubmission`: a whole frame expressed as one or more slices.
+- `SubmissionResult`: accepted/dropped point counts and current target status after a submission.
+- `TargetStatus`: queue, latency, rate, dropped-point, and underrun telemetry for a target.
 - `VirtualControllerEndpoint`: user-facing mapping from a target to protocol-specific endpoint data.
+- `VirtualControllerHostOption`: structured option metadata for CLI and GUI integration.
 - `VirtualControllerHostConfig`: global options passed to the virtual controller host factory.
 
 ## Minimal Continuous Host
@@ -94,7 +97,9 @@ private:
             submission.effectivePointRate = packet.pointRate;
             submission.points = decodeExternalPoints(packet);
 
-            target->sink->submitContinuous(std::move(submission));
+            const SubmissionResult result =
+                target->sink->submitContinuous(std::move(submission));
+            updateProtocolStatus(packet.client, result.status);
         }
     }
 
@@ -127,12 +132,33 @@ void MyVirtualControllerHost::handleFramePacket(const ExternalFrame& frame) {
     submission.clearTransportPrefetch = true;
     submission.slices.push_back(std::move(slice));
 
-    target->sink->replaceFrame(std::move(submission));
+    const SubmissionResult result = target->sink->replaceFrame(std::move(submission));
+    updateProtocolStatus(frame.client, result.status);
 }
 ```
 
 `clearTransportPrefetch` is useful when the new frame should replace pending
 prefetched callback data in the Libera controller path.
+
+## Target Status
+
+`TargetSink` submissions return `SubmissionResult`. Hosts that emulate a DAC
+with buffer/status replies can use this to answer the client without reaching
+into `LinkRuntime`.
+
+```cpp
+TargetStatus status = target->sink->status();
+
+EtherDreamStatus reply;
+reply.fullness = status.totalBufferedPoints;
+reply.pointRate = status.outputPointRate;
+reply.underruns = status.underrunEvents;
+sendStatus(reply);
+```
+
+`TargetSink` calls are designed to be thread-safe. A host may submit to
+different targets from different protocol threads. Submissions to the same
+target are serialized internally by the target sink.
 
 ## Registration
 
@@ -149,6 +175,15 @@ static VirtualControllerHostRegistrar gMyVirtualControllerHost({
         "my-controller",
         "My Controller",
         "Expose linked controllers through My Controller.",
+        {
+            {
+                "port",
+                "Port",
+                "Network port to listen on.",
+                VirtualControllerHostOptionType::Integer,
+                "7654",
+            },
+        },
         false,
     },
     [](const VirtualControllerHostConfig& config) -> std::unique_ptr<VirtualControllerHost> {
@@ -185,6 +220,11 @@ bool MyVirtualControllerHost::start(const VirtualControllerHostContext& context,
         exposedEndpoint.targetId = target.sink->targetInfo().id;
         exposedEndpoint.label = "My Controller endpoint";
         exposedEndpoint.value = endpointValue;
+        exposedEndpoint.kind = "network-socket";
+        exposedEndpoint.protocol = "My Controller";
+        exposedEndpoint.transport = "tcp";
+        exposedEndpoint.address = "0.0.0.0";
+        exposedEndpoint.port = configuredPort;
         currentEndpoints.push_back(std::move(exposedEndpoint));
     }
 
@@ -219,10 +259,12 @@ app starts
 - Keep protocol parsing and hardware output separate.
 - Call `reset()` when your protocol session closes or changes ownership.
 - Provide useful `VirtualControllerEndpoint`; it is what users see in logs and the GUI.
+- Provide structured `VirtualControllerHostOption` entries for settings that should appear in UI or CLI.
+- Use `SubmissionResult` and `TargetStatus` when your emulated protocol needs buffer or readiness replies.
 - Clamp and validate protocol data before constructing `LaserPoint` values.
 - Keep `stop()` prompt. It may be called while network or protocol threads are active.
 
 The current API is intentionally small. If a virtual controller host needs
-backpressure, structured options, or richer events, that should be added to the
-shared virtual controller host contract rather than hidden inside one virtual
-controller host implementation.
+richer events, client-session state, or OS-specific device lifecycle hooks, that
+should be added to the shared virtual controller host contract rather than
+hidden inside one virtual controller host implementation.

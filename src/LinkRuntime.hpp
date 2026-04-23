@@ -73,6 +73,13 @@ struct EndpointSnapshot {
     std::string virtualControllerHostDisplayName;
     std::string virtualControllerEndpointLabel;
     std::string virtualControllerEndpointValue;
+    std::string virtualControllerEndpointKind;
+    std::string virtualControllerEndpointProtocol;
+    std::string virtualControllerEndpointTransport;
+    std::string virtualControllerEndpointAddress;
+    std::uint16_t virtualControllerEndpointPort = 0;
+    std::uint32_t virtualControllerEndpointChannels = 0;
+    std::unordered_map<std::string, std::string> virtualControllerEndpointAttributes;
     EndpointStatsSnapshot stats;
 };
 

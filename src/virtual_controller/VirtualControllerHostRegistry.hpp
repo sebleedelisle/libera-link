@@ -15,6 +15,7 @@ struct VirtualControllerHostInfo {
     std::string id;
     std::string displayName;
     std::string description;
+    std::vector<VirtualControllerHostOption> options;
     bool defaultSelection = false;
 };
 

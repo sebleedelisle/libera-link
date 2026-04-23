@@ -98,9 +98,9 @@ good seed for a reusable library, but it is not yet a stable external ABI.
 Before treating it as a standalone library, the main areas to formalize are:
 
 - lifecycle guarantees for `start()`, `stop()`, and `endpoints()`
-- thread-safety expectations for `TargetSink` calls
-- structured virtual controller host option metadata
+- validation and UI rendering for structured virtual controller host options
+- endpoint state updates after startup
 - error and event reporting
-- backpressure or return status from point submissions
+- OS-specific host lifecycles such as virtual audio devices
 
 See [Writing a virtual controller host](virtual-controller-hosts.md) for the current shape.

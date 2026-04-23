@@ -227,10 +227,10 @@ public:
         return info_;
     }
 
-    void submitContinuous(virtual_controller::SliceSubmission submission) override {
+    virtual_controller::SubmissionResult submitContinuous(virtual_controller::SliceSubmission submission) override {
         const std::size_t pointCount = submission.points.size();
         if (pointCount == 0) {
-            return;
+            return makeSubmissionResult(false, 0, 0);
         }
 
         receivedSlices_.fetch_add(1, std::memory_order_relaxed);
@@ -243,6 +243,7 @@ public:
             });
         receivedLitPoints_.fetch_add(litCount, std::memory_order_relaxed);
 
+        std::size_t dropCount = 0;
         {
             std::lock_guard<std::mutex> lock(queueMutex_);
             hasSeenInput_ = true;
@@ -250,7 +251,6 @@ public:
             for (auto& point : submission.points) {
                 pendingPoints_.push_back(point);
             }
-            std::size_t dropCount = 0;
             while (!pendingPoints_.empty() &&
                    (pendingPoints_.size() + downstreamBuffer.pointsInBuffer) > maxQueuedPoints_) {
                 pendingPoints_.pop_front();
@@ -263,11 +263,12 @@ public:
 
         maybeUpdatePointRate(submission.effectivePointRate.value_or(
             inferCommandedPointRate(pointCount, static_cast<double>(submission.durationUs))));
+        return makeSubmissionResult(true, pointCount, dropCount);
     }
 
-    void replaceFrame(virtual_controller::FrameSubmission submission) override {
+    virtual_controller::SubmissionResult replaceFrame(virtual_controller::FrameSubmission submission) override {
         if (submission.slices.empty()) {
-            return;
+            return makeSubmissionResult(false, 0, 0);
         }
 
         std::deque<LaserPoint> replacementPoints;
@@ -295,7 +296,7 @@ public:
         }
 
         if (replacementPoints.empty()) {
-            return;
+            return makeSubmissionResult(false, 0, 0);
         }
 
         receivedSlices_.fetch_add(validSliceCount, std::memory_order_relaxed);
@@ -303,13 +304,13 @@ public:
         receivedLitPoints_.fetch_add(totalLitCount, std::memory_order_relaxed);
 
         const auto downstreamBuffer = downstreamBufferSnapshot();
+        std::size_t dropCount = 0;
         {
             std::lock_guard<std::mutex> lock(queueMutex_);
             hasSeenInput_ = true;
             lastInputAt_ = std::chrono::steady_clock::now();
             pendingPoints_.swap(replacementPoints);
 
-            std::size_t dropCount = 0;
             while (!pendingPoints_.empty() &&
                    (pendingPoints_.size() + downstreamBuffer.pointsInBuffer) > maxQueuedPoints_) {
                 pendingPoints_.pop_front();
@@ -325,6 +326,11 @@ public:
         if (submission.clearTransportPrefetch && controller_) {
             controller_->clearPointCallbackPrefetch();
         }
+        return makeSubmissionResult(true, totalPointCount, dropCount);
+    }
+
+    virtual_controller::TargetStatus status() const override {
+        return targetStatusSnapshot();
     }
 
     void reset() override {
@@ -377,6 +383,41 @@ public:
         return snapshot;
     }
 
+    virtual_controller::TargetStatus targetStatusSnapshot() const {
+        const auto stats = getStatsSnapshot();
+        virtual_controller::TargetStatus status;
+        status.queuedPoints = stats.queuedPoints;
+        status.maxQueuedPoints = maxQueuedPoints_;
+        status.controllerPrefetchedPoints = stats.controllerPrefetchedPoints;
+        status.controllerTransportBufferedPoints = stats.controllerTransportBufferedPoints;
+        status.controllerBufferedPoints = stats.controllerBufferedPoints;
+        status.totalBufferedPoints = stats.totalBufferedPoints;
+        status.targetBufferedPoints = stats.targetBufferedPoints;
+        status.outputPointRate = stats.outputPointRate;
+        status.observedInputPointRate = stats.observedInputPointRate;
+        status.latencyMs = stats.latencyMs;
+        status.receivedPoints = stats.receivedPoints;
+        status.droppedPoints = stats.droppedPoints;
+        status.underrunEvents = stats.callbackUnderrunEvents;
+        status.underrunPoints = stats.callbackUnderrunPoints;
+        status.buffering = stats.buffering;
+        return status;
+    }
+
+    virtual_controller::SubmissionResult makeSubmissionResult(bool accepted,
+                                                              std::size_t submittedPoints,
+                                                              std::size_t droppedPoints) const {
+        virtual_controller::SubmissionResult result;
+        result.accepted = accepted;
+        result.submittedPoints = submittedPoints;
+        result.droppedPoints = droppedPoints;
+        result.acceptedPoints = accepted
+            ? submittedPoints - std::min(submittedPoints, droppedPoints)
+            : 0;
+        result.status = targetStatusSnapshot();
+        return result;
+    }
+
     bool isAwaitingInput(std::chrono::milliseconds idleThreshold = 2000ms) const {
         std::lock_guard<std::mutex> lock(queueMutex_);
         return isAwaitingInputLocked(std::chrono::steady_clock::now(), idleThreshold);
@@ -394,6 +435,13 @@ public:
         if (endpoint != nullptr) {
             snapshot.virtualControllerEndpointLabel = endpoint->label;
             snapshot.virtualControllerEndpointValue = endpoint->value;
+            snapshot.virtualControllerEndpointKind = endpoint->kind;
+            snapshot.virtualControllerEndpointProtocol = endpoint->protocol;
+            snapshot.virtualControllerEndpointTransport = endpoint->transport;
+            snapshot.virtualControllerEndpointAddress = endpoint->address;
+            snapshot.virtualControllerEndpointPort = endpoint->port;
+            snapshot.virtualControllerEndpointChannels = endpoint->channels;
+            snapshot.virtualControllerEndpointAttributes = endpoint->attributes;
         }
 
         const auto stats = getStatsSnapshot();

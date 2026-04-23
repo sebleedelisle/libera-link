@@ -2,6 +2,7 @@
 
 #include "libera/core/LaserPoint.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -24,6 +25,32 @@ struct FrameSubmission {
     bool clearTransportPrefetch = false;
 };
 
+struct TargetStatus {
+    std::size_t queuedPoints = 0;
+    std::size_t maxQueuedPoints = 0;
+    std::size_t controllerPrefetchedPoints = 0;
+    std::size_t controllerTransportBufferedPoints = 0;
+    std::size_t controllerBufferedPoints = 0;
+    std::size_t totalBufferedPoints = 0;
+    std::size_t targetBufferedPoints = 0;
+    std::uint32_t outputPointRate = 0;
+    std::uint32_t observedInputPointRate = 0;
+    std::uint32_t latencyMs = 0;
+    std::uint64_t receivedPoints = 0;
+    std::uint64_t droppedPoints = 0;
+    std::uint64_t underrunEvents = 0;
+    std::uint64_t underrunPoints = 0;
+    bool buffering = false;
+};
+
+struct SubmissionResult {
+    bool accepted = false;
+    std::size_t submittedPoints = 0;
+    std::size_t acceptedPoints = 0;
+    std::size_t droppedPoints = 0;
+    TargetStatus status;
+};
+
 struct TargetInfo {
     std::string id;
     std::string label;
@@ -36,8 +63,9 @@ public:
     virtual ~TargetSink() = default;
 
     virtual const TargetInfo& targetInfo() const = 0;
-    virtual void submitContinuous(SliceSubmission submission) = 0;
-    virtual void replaceFrame(FrameSubmission submission) = 0;
+    virtual SubmissionResult submitContinuous(SliceSubmission submission) = 0;
+    virtual SubmissionResult replaceFrame(FrameSubmission submission) = 0;
+    virtual TargetStatus status() const = 0;
     virtual void reset() = 0;
 };
 
@@ -53,6 +81,31 @@ struct VirtualControllerEndpoint {
     std::string targetId;
     std::string label;
     std::string value;
+    std::string kind;
+    std::string protocol;
+    std::string transport;
+    std::string address;
+    std::uint16_t port = 0;
+    std::uint32_t channels = 0;
+    std::unordered_map<std::string, std::string> attributes;
+};
+
+enum class VirtualControllerHostOptionType {
+    String,
+    Integer,
+    Boolean,
+    Decimal,
+    Choice
+};
+
+struct VirtualControllerHostOption {
+    std::string key;
+    std::string displayName;
+    std::string description;
+    VirtualControllerHostOptionType type = VirtualControllerHostOptionType::String;
+    std::string defaultValue;
+    std::vector<std::string> choices;
+    bool required = false;
 };
 
 struct VirtualControllerHostConfig {

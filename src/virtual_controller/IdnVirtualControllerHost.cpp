@@ -30,6 +30,7 @@ VirtualControllerHostRegistrar gIdnVirtualControllerHostRegistrar({
         "idn",
         "OpenIDN",
         "Expose linked controllers as OpenIDN / IDN services.",
+        {},
         true,
     },
     [](const VirtualControllerHostConfig& config) {
@@ -51,8 +52,8 @@ public:
         if (!sink_) {
             return -1;
         }
-        sink_->submitContinuous(makeSliceSubmission(slice, durationUs));
-        return 0;
+        const auto result = sink_->submitContinuous(makeSliceSubmission(slice, durationUs));
+        return result.accepted ? 0 : -1;
     }
 
     void replaceFrameBuffer(const SliceBuf& buffer, bool clearTransportPrefetch) {
@@ -408,6 +409,12 @@ bool IdnVirtualControllerHost::start(const VirtualControllerHostContext& context
         endpoint.targetId = target.sink->targetInfo().id;
         endpoint.label = "IDN service " + std::to_string(serviceIdRaw);
         endpoint.value = std::to_string(serviceIdRaw);
+        endpoint.kind = "service";
+        endpoint.protocol = "OpenIDN";
+        endpoint.transport = "udp";
+        endpoint.address = "0.0.0.0";
+        endpoint.port = 7255;
+        endpoint.attributes["service_id"] = std::to_string(serviceIdRaw);
         endpoints_.push_back(std::move(endpoint));
         sessions.push_back(std::move(session));
         ++startedTargets;
