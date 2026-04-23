@@ -60,8 +60,8 @@
 
 // Module header
 #include "SockIDNServer.hpp"
-#if !defined(OPENIDN_BRIDGE_MODE)
-#define OPENIDN_BRIDGE_MODE 0
+#if !defined(OPENIDN_LINK_MODE)
+#define OPENIDN_LINK_MODE 0
 #endif
 #if defined(__linux__)
 #include <fstream>
@@ -264,7 +264,7 @@ void RECV_COOKIE::sendResponse(unsigned sendLen)
     SOCK_RECV_CONTEXT *rxContext = (SOCK_RECV_CONTEXT *)this;
 
     struct sockaddr *sendAddrPtr = (struct sockaddr *)&rxContext->remoteAddr;
-#if OPENIDN_BRIDGE_MODE
+#if OPENIDN_LINK_MODE
     socklen_t sendAddrSize = rxContext->remoteAddrSize;
     if(sendAddrSize == 0) sendAddrSize = sizeof(rxContext->remoteAddr);
 #else
@@ -445,7 +445,7 @@ int SockIDNServer::receiveUDP(ODF_ENV *env, OPENIDN_SOCKET fdSocket, uint32_t us
         rxContext.sendBufferPtr = sendBuffer;
         rxContext.sendBufferSize = sizeof(sendBuffer);
 
-#if OPENIDN_BRIDGE_MODE
+#if OPENIDN_LINK_MODE
         // Read the datagram from the socket first. On some platforms, FIONREAD can
         // race with actual receive length and report stale lengths.
         uint8_t recvBuffer[0x10000];
@@ -902,7 +902,7 @@ void SockIDNServer::networkThreadFunc()
     //gethostname((char *)hostName, sizeof(hostName));
     //setHostName(hostName, sizeof(hostName));
     setUnitID(unitID, sizeof(unitID));
-#elif OPENIDN_BRIDGE_MODE
+#elif OPENIDN_LINK_MODE
     uint8_t unitID[UNITID_SIZE] = { 0 };
     uint8_t hostName[HOST_NAME_SIZE] = { 0 };
     if(gethostname(reinterpret_cast<char *>(hostName), sizeof(hostName) - 1) != 0)

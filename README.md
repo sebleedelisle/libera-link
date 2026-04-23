@@ -24,10 +24,10 @@ cmake --preset release
 cmake --build --preset release --parallel
 ```
 
-`LIBERA_LINK_OPENIDN_BRIDGE_MODE` controls bridge-specific OpenIDN behavior:
+`LIBERA_LINK_OPENIDN_LINK_MODE` controls Link-specific OpenIDN behavior:
 
-- `ON` (default): enables macOS/bridge behavior patches.
-- `OFF`: keeps original OpenIDN behavior paths.
+- `ON` (default): enables Libera Link OpenIDN behavior paths.
+- `OFF`: unsupported by the vendored OpenIDN subset.
 
 ## CI / Release
 
@@ -55,7 +55,7 @@ Pass custom ingester settings through repeated `--ingester-opt key=value` flags.
 
 - Streaming to hardware uses a Libera callback-backed queue.
 - The built-in `idn` ingester is registered by default and exposes controllers as OpenIDN / IDN services.
-- Already-IDN Helios network DACs are skipped automatically (only non-IDN DACs are bridged).
+- Already-IDN Helios network DACs are skipped automatically (only non-IDN DACs are linked).
 
 ## Custom Ingesters
 

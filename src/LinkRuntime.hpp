@@ -10,7 +10,7 @@
 
 namespace libera_link {
 
-struct BridgeOptions {
+struct LinkOptions {
     std::uint32_t discoveryTimeoutMs = 5000;
     std::size_t maxDacs = 0;
     std::uint32_t sliceDurationUs = 15000;
@@ -30,7 +30,7 @@ enum class ParseResult {
     Error
 };
 
-ParseResult parseOptions(int argc, char** argv, BridgeOptions& options);
+ParseResult parseOptions(int argc, char** argv, LinkOptions& options);
 
 enum class RuntimeState {
     Stopped,
@@ -82,7 +82,7 @@ struct DiscoveredControllerSnapshot {
     std::string type;
     std::uint32_t maxPointRate = 0;
     std::string usage;
-    bool bridgeable = true;
+    bool linkable = true;
     std::string note;
 };
 
@@ -101,19 +101,19 @@ struct RuntimeSnapshot {
     std::vector<std::string> recentLogs;
 };
 
-class BridgeRuntime {
+class LinkRuntime {
 public:
-    BridgeRuntime();
-    ~BridgeRuntime();
+    LinkRuntime();
+    ~LinkRuntime();
 
-    BridgeRuntime(const BridgeRuntime&) = delete;
-    BridgeRuntime& operator=(const BridgeRuntime&) = delete;
+    LinkRuntime(const LinkRuntime&) = delete;
+    LinkRuntime& operator=(const LinkRuntime&) = delete;
 
     void setEchoLogsToStdStreams(bool enabled);
 
-    bool scan(const BridgeOptions& options);
-    bool start(const BridgeOptions& options);
-    bool start(const BridgeOptions& options, const std::set<std::string>& selectedControllerIds);
+    bool scan(const LinkOptions& options);
+    bool start(const LinkOptions& options);
+    bool start(const LinkOptions& options, const std::set<std::string>& selectedControllerIds);
     void requestStop();
     void stop();
 

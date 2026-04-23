@@ -1,4 +1,4 @@
-#include "BridgeRuntime.hpp"
+#include "LinkRuntime.hpp"
 #include "LiberaPaths.hpp"
 #include "ingest/IdnIngester.hpp"
 #include "ingest/IngesterRegistry.hpp"
@@ -112,7 +112,7 @@ void printUsageImpl(const char* exe, std::ostream& out) {
     const auto availableIngesters = ingest::availableIngesters();
     out << "Usage: " << exe << " [options]\n"
         << "  --discovery-timeout-ms <ms>    Libera discovery wait time (default 5000)\n"
-        << "  --max-dacs <count>             Limit number of bridged controllers (default all)\n"
+        << "  --max-dacs <count>             Limit number of linked controllers (default all)\n"
         << "  --ingester <id>                Ingester to run (default "
         << (defaultIngester ? defaultIngester->id : "none") << ")\n"
         << "  --ingester-opt <key=value>     Pass a custom option to the selected ingester\n"
@@ -450,7 +450,7 @@ public:
         }
 
         std::ostringstream oss;
-        oss << "[bridge:" << info_.label << "]"
+        oss << "[link:" << info_.label << "]"
             << " rx_slices/s=" << deltaRxSlices
             << " rx_pts/s=" << deltaRxPts
             << " rx_lit_pts/s=" << deltaRxLitPts
@@ -665,7 +665,7 @@ private:
 
         if (after != before && logger_) {
             std::ostringstream oss;
-            oss << "[bridge:" << info_.label << "] auto-latency "
+            oss << "[link:" << info_.label << "] auto-latency "
                 << before << "ms -> " << after << "ms";
             logger_->info(oss.str());
         }
@@ -692,7 +692,7 @@ private:
         }
 
         std::ostringstream oss;
-        oss << "[bridge:" << info_.label << "] underrun"
+        oss << "[link:" << info_.label << "] underrun"
             << " need_min=" << req.minimumPointsRequired
             << " need_max=" << req.maximumPointsRequired
             << " queue_local=" << available
@@ -795,7 +795,7 @@ std::vector<std::unique_ptr<libera::core::ControllerInfo>> discoverControllers(
     return discovered;
 }
 
-bool shouldBridgeController(const libera::core::ControllerInfo& info, std::string& reason) {
+bool shouldLinkController(const libera::core::ControllerInfo& info, std::string& reason) {
     if (info.type() == "Helios") {
         const auto* heliosInfo = dynamic_cast<const libera::helios::HeliosControllerInfo*>(&info);
         if (heliosInfo != nullptr && !heliosInfo->isUsbController()) {
@@ -838,7 +838,7 @@ DiscoveredControllerSnapshot makeDiscoveredControllerSnapshot(
     snapshot.usage = usageStateLabel(info.usageState());
 
     std::string reason;
-    snapshot.bridgeable = shouldBridgeController(info, reason);
+    snapshot.linkable = shouldLinkController(info, reason);
     snapshot.note = std::move(reason);
     return snapshot;
 }
@@ -869,7 +869,7 @@ const ingest::BindingInfo* bindingForTarget(
 
 } // namespace
 
-struct BridgeRuntime::Impl {
+struct LinkRuntime::Impl {
     mutable std::mutex mutex;
     RuntimeState state = RuntimeState::Stopped;
     std::string statusMessage = "Stopped";
@@ -899,7 +899,7 @@ void printUsage(const char* exe) {
     printUsageImpl(exe, std::cout);
 }
 
-ParseResult parseOptions(int argc, char** argv, BridgeOptions& options) {
+ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
     ingest::ensureBuiltInIdnIngesterLinked();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -998,21 +998,21 @@ const char* runtimeStateLabel(RuntimeState state) {
     return "Unknown";
 }
 
-BridgeRuntime::BridgeRuntime()
+LinkRuntime::LinkRuntime()
     : impl_(std::make_unique<Impl>()) {
     configureLiberaPluginDirectories();
     impl_->liberaSystem = std::make_unique<libera::System>();
 }
 
-BridgeRuntime::~BridgeRuntime() {
+LinkRuntime::~LinkRuntime() {
     stop();
 }
 
-void BridgeRuntime::setEchoLogsToStdStreams(bool enabled) {
+void LinkRuntime::setEchoLogsToStdStreams(bool enabled) {
     impl_->logger->setEcho(enabled);
 }
 
-bool BridgeRuntime::scan(const BridgeOptions& options) {
+bool LinkRuntime::scan(const LinkOptions& options) {
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (impl_->state == RuntimeState::Scanning ||
@@ -1068,12 +1068,12 @@ bool BridgeRuntime::scan(const BridgeOptions& options) {
     return true;
 }
 
-bool BridgeRuntime::start(const BridgeOptions& options) {
+bool LinkRuntime::start(const LinkOptions& options) {
     static const std::set<std::string> allControllers;
     return start(options, allControllers);
 }
 
-bool BridgeRuntime::start(const BridgeOptions& options,
+bool LinkRuntime::start(const LinkOptions& options,
                           const std::set<std::string>& selectedControllerIds) {
     const auto selectedIngesterInfo = [&]() -> std::optional<ingest::RegistrationInfo> {
         if (!options.ingesterId.empty()) {
@@ -1132,7 +1132,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
         impl_->setState(RuntimeState::Stopped, "Stopped");
-        impl_->logger->info("Bridge start cancelled.");
+        impl_->logger->info("Link start cancelled.");
         return false;
     }
 
@@ -1183,7 +1183,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         }
 
         std::string skipReason;
-        if (!shouldBridgeController(*info, skipReason)) {
+        if (!shouldLinkController(*info, skipReason)) {
             std::ostringstream oss;
             oss << "Skipping " << describeController(*info) << " (" << skipReason << ")";
             impl_->logger->info(oss.str());
@@ -1228,13 +1228,13 @@ bool BridgeRuntime::start(const BridgeOptions& options,
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
         targets.clear();
         impl_->setState(RuntimeState::Stopped, "Stopped");
-        impl_->logger->info("Bridge start cancelled.");
+        impl_->logger->info("Link start cancelled.");
         return false;
     }
 
     if (targets.empty()) {
         const std::string error = selectedControllerIds.empty()
-                                      ? "No bridge endpoints started."
+                                      ? "No link endpoints started."
                                       : "No selected controllers were started.";
         impl_->setState(RuntimeState::Failed, error);
         impl_->logger->error(error);
@@ -1275,7 +1275,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         ingester->stop();
         targets.clear();
         impl_->setState(RuntimeState::Stopped, "Stopped");
-        impl_->logger->info("Bridge start cancelled.");
+        impl_->logger->info("Link start cancelled.");
         return false;
     }
 
@@ -1285,7 +1285,7 @@ bool BridgeRuntime::start(const BridgeOptions& options,
     for (const auto& target : targets) {
         const auto* binding = bindingForTarget(bindings, target->targetInfo().id);
         std::ostringstream oss;
-        oss << "Bridged " << target->targetInfo().label
+        oss << "Linked " << target->targetInfo().label
             << " [" << target->targetInfo().type << ":" << target->targetInfo().id << "]"
             << " via " << activeIngesterDisplayName;
         if (binding != nullptr && !binding->label.empty()) {
@@ -1317,11 +1317,11 @@ bool BridgeRuntime::start(const BridgeOptions& options,
         }
     });
 
-    impl_->logger->info("Bridge running.");
+    impl_->logger->info("Link running.");
     return true;
 }
 
-void BridgeRuntime::requestStop() {
+void LinkRuntime::requestStop() {
     impl_->stopRequested.store(true, std::memory_order_relaxed);
 
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -1331,7 +1331,7 @@ void BridgeRuntime::requestStop() {
     }
 }
 
-void BridgeRuntime::stop() {
+void LinkRuntime::stop() {
     requestStop();
 
     std::thread monitorThread;
@@ -1368,11 +1368,11 @@ void BridgeRuntime::stop() {
 
     impl_->stopRequested.store(false, std::memory_order_relaxed);
     if (hadActiveResources) {
-        impl_->logger->info("Bridge stopped.");
+        impl_->logger->info("Link stopped.");
     }
 }
 
-RuntimeSnapshot BridgeRuntime::snapshot() const {
+RuntimeSnapshot LinkRuntime::snapshot() const {
     RuntimeSnapshot snapshot;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);

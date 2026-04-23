@@ -23,7 +23,7 @@ set(LIBERA_LINK_APP_VERSION "${PROJECT_VERSION}")
 set(LIBERA_LINK_APP_BUNDLE_NAME "Libera Link")
 
 option(LIBERA_LINK_USE_BUNDLED_LIBUSB "Use bundled libusb from libera-laser dependency tree" ON)
-option(LIBERA_LINK_OPENIDN_BRIDGE_MODE "Enable bridge-specific OpenIDN behavior changes" ON)
+option(LIBERA_LINK_OPENIDN_LINK_MODE "Enable Link-specific OpenIDN behavior changes" ON)
 option(LIBERA_LINK_BUILD_GUI "Build the native GUI target when ImGui/GLFW sources are available" ON)
 
 set(LIBERA_LINK_GUI_GLFW_SOURCE_DIR "" CACHE PATH "Path to a GLFW source tree for the GUI target")
@@ -65,17 +65,17 @@ set(OPENIDN_SOURCES
     "${OPENIDN_ROOT}/stage/SockIDNServer.cpp"
 )
 
-if(NOT LIBERA_LINK_OPENIDN_BRIDGE_MODE)
+if(NOT LIBERA_LINK_OPENIDN_LINK_MODE)
   message(FATAL_ERROR
-      "LIBERA_LINK_OPENIDN_BRIDGE_MODE=OFF is no longer supported by the vendored "
+      "LIBERA_LINK_OPENIDN_LINK_MODE=OFF is no longer supported by the vendored "
       "third_party/openidn subset."
   )
 endif()
 
 add_library(openidn-core STATIC ${OPENIDN_SOURCES})
 target_compile_definitions(openidn-core PUBLIC ODF_USE_TAXI_SOCK)
-if(LIBERA_LINK_OPENIDN_BRIDGE_MODE)
-  target_compile_definitions(openidn-core PUBLIC OPENIDN_BRIDGE_MODE=1)
+if(LIBERA_LINK_OPENIDN_LINK_MODE)
+  target_compile_definitions(openidn-core PUBLIC OPENIDN_LINK_MODE=1)
 endif()
 target_include_directories(openidn-core PUBLIC "${OPENIDN_ROOT}")
 if(MSVC)
@@ -91,7 +91,7 @@ if(WIN32)
 endif()
 
 add_library(libera_link_core STATIC
-    src/BridgeRuntime.cpp
+    src/LinkRuntime.cpp
     src/ingest/IdnIngester.cpp
     src/ingest/IngesterRegistry.cpp
     src/LiberaPaths.cpp

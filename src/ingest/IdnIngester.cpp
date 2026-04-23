@@ -29,7 +29,7 @@ IngesterRegistrar gIdnIngesterRegistrar({
     {
         "idn",
         "OpenIDN",
-        "Expose bridged controllers as OpenIDN / IDN services.",
+        "Expose linked controllers as OpenIDN / IDN services.",
         true,
     },
     [](const FactoryConfig& config) {
@@ -194,9 +194,9 @@ public:
         , sliceDurationUs_(sliceDurationUs)
         , adapter_(std::make_shared<IdnTransportAdapter>(sink_))
         , output_(std::make_unique<V1LaproGraphicOutput>(adapter_)) {
-        const std::string bridgedServiceName =
+        const std::string linkedServiceName =
             std::string("Libera Link ") + sink_->targetInfo().label;
-        std::vector<char> serviceName(bridgedServiceName.begin(), bridgedServiceName.end());
+        std::vector<char> serviceName(linkedServiceName.begin(), linkedServiceName.end());
         serviceName.push_back('\0');
         const bool isDefault = (serviceId_ == 1);
         service_ = std::make_unique<IDNLaproService>(

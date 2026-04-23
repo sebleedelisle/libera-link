@@ -1,4 +1,4 @@
-#include "BridgeRuntime.hpp"
+#include "LinkRuntime.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -16,7 +16,7 @@ void onSignal(int) {
 } // namespace
 
 int main(int argc, char** argv) {
-    libera_link::BridgeOptions options;
+    libera_link::LinkOptions options;
     const libera_link::ParseResult parseResult = libera_link::parseOptions(argc, argv, options);
     if (parseResult == libera_link::ParseResult::Help) {
         return 0;
@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    libera_link::BridgeRuntime runtime;
+    libera_link::LinkRuntime runtime;
     runtime.setEchoLogsToStdStreams(true);
     if (!runtime.start(options)) {
         return 1;
