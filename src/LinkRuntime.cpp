@@ -125,6 +125,7 @@ void printUsageImpl(const char* exe, std::ostream& out) {
         << "  --latency-ms <ms>              Target buffered latency in milliseconds (default 50)\n"
         << "  --max-latency-ms <ms>          Max auto latency in milliseconds (default 1500)\n"
         << "  --no-auto-latency              Disable automatic latency increase on underrun\n"
+        << "  --disable-controller-type <id> Disable a Libera controller manager type\n"
         << "  --help                         Show this message\n";
 
     if (!availableVirtualControllerHosts.empty()) {
@@ -134,6 +135,18 @@ void printUsageImpl(const char* exe, std::ostream& out) {
             if (info.defaultSelection) {
                 out << " [default]";
             }
+            if (!info.description.empty()) {
+                out << " - " << info.description;
+            }
+            out << "\n";
+        }
+    }
+
+    const auto availableControllerManagers = libera::System::availableControllerManagers();
+    if (!availableControllerManagers.empty()) {
+        out << "\nAvailable controller types:\n";
+        for (const auto& info : availableControllerManagers) {
+            out << "  " << info.type << "  " << info.displayName;
             if (!info.description.empty()) {
                 out << " - " << info.description;
             }
@@ -957,6 +970,7 @@ struct LinkRuntime::Impl {
     std::vector<std::shared_ptr<LiberaTarget>> targets;
     std::string activeVirtualControllerHostId;
     std::string activeVirtualControllerHostDisplayName;
+    std::set<std::string> activeDisabledControllerTypes;
 
     std::atomic<bool> stopRequested{false};
     LogSink logger = std::make_shared<RuntimeLogger>();
@@ -966,6 +980,21 @@ struct LinkRuntime::Impl {
         state = nextState;
         statusMessage = std::move(message);
     }
+
+    void configureLiberaSystem(const LinkOptions& options) {
+        if (liberaSystem && activeDisabledControllerTypes == options.disabledControllerTypes) {
+            return;
+        }
+
+        if (liberaSystem) {
+            liberaSystem->shutdown();
+        }
+
+        libera::SystemOptions systemOptions;
+        systemOptions.disabledControllerTypes = options.disabledControllerTypes;
+        liberaSystem = std::make_unique<libera::System>(std::move(systemOptions));
+        activeDisabledControllerTypes = options.disabledControllerTypes;
+    }
 };
 
 void printUsage(const char* exe) {
@@ -973,6 +1002,7 @@ void printUsage(const char* exe) {
 }
 
 ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
+    configureLiberaPluginDirectories();
     virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -992,6 +1022,12 @@ ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
 
         if (arg == "--virtual-controller") {
             options.virtualControllerHostId = argv[i + 1];
+            ++i;
+            continue;
+        }
+
+        if (arg == "--disable-controller-type") {
+            options.disabledControllerTypes.insert(argv[i + 1]);
             ++i;
             continue;
         }
@@ -1074,7 +1110,6 @@ const char* runtimeStateLabel(RuntimeState state) {
 LinkRuntime::LinkRuntime()
     : impl_(std::make_unique<Impl>()) {
     configureLiberaPluginDirectories();
-    impl_->liberaSystem = std::make_unique<libera::System>();
 }
 
 LinkRuntime::~LinkRuntime() {
@@ -1105,9 +1140,7 @@ bool LinkRuntime::scan(const LinkOptions& options) {
     impl_->stopRequested.store(false, std::memory_order_relaxed);
     impl_->logger->info("Scanning for controllers via Libera");
 
-    if (!impl_->liberaSystem) {
-        impl_->liberaSystem = std::make_unique<libera::System>();
-    }
+    impl_->configureLiberaSystem(options);
     auto* liberaSystem = impl_->liberaSystem.get();
     auto discovered =
         discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
@@ -1192,9 +1225,7 @@ bool LinkRuntime::start(const LinkOptions& options,
         impl_->logger->info(oss.str());
     }
 
-    if (!impl_->liberaSystem) {
-        impl_->liberaSystem = std::make_unique<libera::System>();
-    }
+    impl_->configureLiberaSystem(options);
     auto* liberaSystem = impl_->liberaSystem.get();
     auto discovered =
         discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);

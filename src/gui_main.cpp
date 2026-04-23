@@ -2,6 +2,7 @@
 #include "LiberaApp.h"
 #include "LiberaPaths.hpp"
 #include "LiberaPluginsWindow.h"
+#include "libera/System.hpp"
 #include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
 #include "fonts/IconsForkAwesome.h"
@@ -11,6 +12,8 @@
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <set>
 #include <unordered_map>
@@ -21,6 +24,41 @@
 namespace {
 
 using namespace std::chrono_literals;
+
+std::filesystem::path disabledControllerTypesPath() {
+    return std::filesystem::path(libera_link::settingsDirectory()) /
+           "disabled-controller-types.txt";
+}
+
+std::string trimSettingLine(const std::string& line) {
+    const auto begin = line.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        return {};
+    }
+    const auto end = line.find_last_not_of(" \t\r\n");
+    return line.substr(begin, end - begin + 1);
+}
+
+std::set<std::string> loadDisabledControllerTypes() {
+    std::set<std::string> disabledTypes;
+    std::ifstream input(disabledControllerTypesPath());
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trimSettingLine(line);
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+        disabledTypes.insert(std::move(line));
+    }
+    return disabledTypes;
+}
+
+void saveDisabledControllerTypes(const std::set<std::string>& disabledTypes) {
+    std::ofstream output(disabledControllerTypesPath(), std::ios::trunc);
+    for (const auto& type : disabledTypes) {
+        output << type << '\n';
+    }
+}
 
 ImVec4 statusColor(libera_link::RuntimeState state) {
     switch (state) {
@@ -250,6 +288,8 @@ int main() {
     if (const auto defaultVirtualControllerHost = libera_link::virtual_controller::defaultVirtualControllerHost()) {
         linkOptions.virtualControllerHostId = defaultVirtualControllerHost->id;
     }
+    std::set<std::string> disabledControllerTypes = loadDisabledControllerTypes();
+    linkOptions.disabledControllerTypes = disabledControllerTypes;
 
     std::future<bool> scanFuture;
     std::future<bool> startFuture;
@@ -261,6 +301,7 @@ int main() {
     bool linkSyncPending = false;
     bool showLogsWindow = false;
     bool showPluginsWindow = false;
+    bool showSettingsWindow = false;
     std::set<std::string> enabledControllers; // IDs of controllers selected for linking
     std::unordered_map<std::string, std::string> controllerHostRoutes;
 
@@ -302,13 +343,15 @@ int main() {
         stopInFlight = true;
     };
 
-    {
+    auto launchScan = [&]() {
         const libera_link::LinkOptions options = linkOptions;
         scanFuture = std::async(std::launch::async, [&runtime, options] {
             return runtime.scan(options);
         });
         scanInFlight = true;
-    }
+    };
+
+    launchScan();
 
     while (app.beginFrame()) {
         if (scanFuture.valid() && scanFuture.wait_for(0ms) == std::future_status::ready) {
@@ -328,6 +371,27 @@ int main() {
 
         const auto snapshot = runtime.snapshot();
         const auto availableVirtualControllerHosts = libera_link::virtual_controller::availableVirtualControllerHosts();
+        const auto availableControllerManagers = libera::System::availableControllerManagers();
+        auto requestDiscoverySettingsSync = [&]() {
+            linkOptions.disabledControllerTypes = disabledControllerTypes;
+            saveDisabledControllerTypes(disabledControllerTypes);
+            const bool linkRunning = snapshot.state == libera_link::RuntimeState::Running ||
+                                       snapshot.state == libera_link::RuntimeState::StopRequested;
+            if (!scanInFlight && !startInFlight && !stopInFlight && !rescanInFlight) {
+                if (linkRunning) {
+                    rescanInFlight = true;
+                    linkSyncPending = false;
+                } else {
+                    linkSyncPending = false;
+                    launchScan();
+                }
+            } else {
+                linkSyncPending = true;
+                if (startInFlight) {
+                    runtime.requestStop();
+                }
+            }
+        };
         const auto selectedVirtualControllerHostIt = std::find_if(
             availableVirtualControllerHosts.begin(), availableVirtualControllerHosts.end(),
             [&](const libera_link::virtual_controller::VirtualControllerHostInfo& info) {
@@ -503,11 +567,7 @@ int main() {
                     rescanInFlight = true;
                     linkSyncPending = false;
                 } else {
-                    const libera_link::LinkOptions options = linkOptions;
-                    scanFuture = std::async(std::launch::async, [&runtime, options] {
-                        return runtime.scan(options);
-                    });
-                    scanInFlight = true;
+                    launchScan();
                 }
             }
             if (scanActionDisabled) {
@@ -523,6 +583,11 @@ int main() {
         ImGui::SameLine();
         if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
             showPluginsWindow = true;
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FK_COG "  Settings", ImVec2(140.0f, 0.0f))) {
+            showSettingsWindow = true;
         }
 
         ImGui::Spacing();
@@ -869,6 +934,78 @@ int main() {
         ImGui::EndChild();
 
         ImGui::End();
+
+        if (showSettingsWindow) {
+            ImGui::SetNextWindowSize(ImVec2(620.0f, 420.0f), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin(ICON_FK_COG "  Settings", &showSettingsWindow, ImGuiWindowFlags_NoCollapse)) {
+                drawSectionTitle(app, "Controller Discovery");
+
+                const bool discoverySettingsLocked =
+                    scanInFlight || startInFlight || stopInFlight || rescanInFlight;
+
+                if (!disabledControllerTypes.empty()) {
+                    if (discoverySettingsLocked) {
+                        ImGui::BeginDisabled();
+                    }
+                    if (ImGui::Button(ICON_FK_CHECK "  Enable All", ImVec2(150.0f, 0.0f))) {
+                        disabledControllerTypes.clear();
+                        requestDiscoverySettingsSync();
+                    }
+                    if (discoverySettingsLocked) {
+                        ImGui::EndDisabled();
+                    }
+                }
+
+                ImGui::Spacing();
+                ImGui::BeginChild("ControllerDiscoverySettings",
+                                  ImVec2(0.0f, 0.0f),
+                                  true,
+                                  ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+                if (availableControllerManagers.empty()) {
+                    ImGui::TextDisabled("No controller managers registered.");
+                }
+
+                for (const auto& manager : availableControllerManagers) {
+                    if (manager.type.empty()) {
+                        continue;
+                    }
+                    ImGui::PushID(manager.type.c_str());
+
+                    bool enabled = disabledControllerTypes.find(manager.type) ==
+                                   disabledControllerTypes.end();
+                    if (discoverySettingsLocked) {
+                        ImGui::BeginDisabled();
+                    }
+                    if (ImGui::Checkbox("##enabled", &enabled)) {
+                        if (enabled) {
+                            disabledControllerTypes.erase(manager.type);
+                        } else {
+                            disabledControllerTypes.insert(manager.type);
+                        }
+                        requestDiscoverySettingsSync();
+                    }
+                    if (discoverySettingsLocked) {
+                        ImGui::EndDisabled();
+                    }
+
+                    ImGui::SameLine();
+                    const std::string label =
+                        manager.displayName.empty() ? manager.type : manager.displayName;
+                    ImGui::TextUnformatted(label.c_str());
+                    if (!manager.description.empty() && ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("%s", manager.description.c_str());
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(%s)", manager.type.c_str());
+
+                    ImGui::PopID();
+                }
+
+                ImGui::EndChild();
+            }
+            ImGui::End();
+        }
 
         if (showLogsWindow) {
             ImGui::SetNextWindowSize(ImVec2(900.0f, 420.0f), ImGuiCond_FirstUseEver);

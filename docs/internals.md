@@ -55,12 +55,18 @@ targets from `LinkRuntime` and submits point data to those targets.
 `LinkRuntime` owns the hardware side. It:
 
 - discovers controllers through `libera::System`
+- passes disabled controller types into `libera::System` before manager construction
 - filters controllers that should not be linked
 - connects selected controllers
 - wraps each controller in a `TargetSink`
 - creates and starts the selected virtual controller host
 - records endpoint stats
 - stops the virtual controller host and releases controllers on shutdown
+
+Controller discovery settings are applied before Libera managers are
+constructed. This matters for managers such as Ether Dream, LaserCube Net, and
+plugins, because construction may bind sockets, create backend state, or start
+discovery threads.
 
 ## Target Queueing
 

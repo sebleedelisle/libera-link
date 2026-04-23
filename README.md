@@ -24,6 +24,10 @@ The main window shows:
 - buffering, underrun, and dropped-point counters
 - recent runtime logs
 
+The Settings window can disable specific Libera controller types from
+discovery. Disabled types are not constructed, so their discovery sockets,
+USB scans, plugin backends, and background threads are not started.
+
 Already-IDN Helios network controllers are skipped automatically because they
 already expose the protocol Libera Link would provide for them.
 
@@ -55,6 +59,8 @@ Useful options:
 - `--virtual-controller-opt key=value` passes custom options to the selected
   virtual controller.
 - `--max-dacs <count>` limits how many discovered controllers are linked.
+- `--disable-controller-type <type>` prevents a Libera controller manager type
+  from being constructed or discovered.
 - `--latency-ms <ms>` sets the starting target buffer latency.
 - `--no-auto-latency` disables automatic latency increases after underruns.
 
