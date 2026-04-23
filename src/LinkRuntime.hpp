@@ -10,6 +10,13 @@
 
 namespace libera_link {
 
+struct VirtualControllerRoute {
+    std::string controllerId;
+    std::string hostId;
+    std::string hostInstanceKey;
+    std::unordered_map<std::string, std::string> options;
+};
+
 struct LinkOptions {
     std::uint32_t discoveryTimeoutMs = 5000;
     std::size_t maxDacs = 0;
@@ -20,6 +27,7 @@ struct LinkOptions {
     bool autoLatency = true;
     std::string virtualControllerHostId;
     std::unordered_map<std::string, std::string> virtualControllerHostOptions;
+    std::vector<VirtualControllerRoute> virtualControllerRoutes;
 };
 
 void printUsage(const char* exe);

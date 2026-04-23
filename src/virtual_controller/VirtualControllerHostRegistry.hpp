@@ -17,6 +17,7 @@ struct VirtualControllerHostInfo {
     std::string description;
     std::vector<VirtualControllerHostOption> options;
     bool defaultSelection = false;
+    bool separateInstancePerTarget = false;
 };
 
 using VirtualControllerHostFactory = std::function<std::unique_ptr<VirtualControllerHost>(const VirtualControllerHostConfig&)>;

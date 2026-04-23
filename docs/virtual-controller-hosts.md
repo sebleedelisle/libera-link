@@ -184,7 +184,8 @@ static VirtualControllerHostRegistrar gMyVirtualControllerHost({
                 "7654",
             },
         },
-        false,
+        false, // default GUI/CLI selection
+        false, // shared instance; set true for one host instance per target
     },
     [](const VirtualControllerHostConfig& config) -> std::unique_ptr<VirtualControllerHost> {
         return std::make_unique<MyVirtualControllerHost>(config);
@@ -198,6 +199,28 @@ host appears in the GUI selector and can be selected from the CLI:
 ```bash
 ./build/libera_link --virtual-controller my-controller
 ```
+
+## Controller Routes
+
+`LinkOptions::virtualControllerHostId` is the default host for selected
+controllers. `LinkOptions::virtualControllerRoutes` can override that per
+controller:
+
+```cpp
+LinkOptions options;
+options.virtualControllerHostId = "idn";
+
+VirtualControllerRoute route;
+route.controllerId = "etherdream:01020304";
+route.hostId = "ether-dream";
+options.virtualControllerRoutes.push_back(std::move(route));
+```
+
+Routes are grouped into host instances before startup. By default, controllers
+using the same host and options share one host instance. If a host type needs a
+separate server or virtual device per physical target, register it with
+`separateInstancePerTarget = true`. A route can also set `hostInstanceKey`
+explicitly when a host needs custom grouping.
 
 ## Endpoint Information
 

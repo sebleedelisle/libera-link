@@ -19,13 +19,16 @@
 #include <deque>
 #include <exception>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -916,6 +919,28 @@ const virtual_controller::VirtualControllerEndpoint* endpointForTarget(
     return nullptr;
 }
 
+struct ActiveVirtualControllerHost {
+    std::string id;
+    std::string displayName;
+    std::string instanceKey;
+    std::unique_ptr<virtual_controller::VirtualControllerHost> host;
+    std::vector<std::shared_ptr<LiberaTarget>> targets;
+    std::vector<virtual_controller::VirtualControllerEndpoint> endpoints;
+};
+
+const ActiveVirtualControllerHost* activeHostForTarget(
+    const std::vector<ActiveVirtualControllerHost>& activeHosts,
+    const std::string& targetId) {
+    for (const auto& activeHost : activeHosts) {
+        for (const auto& target : activeHost.targets) {
+            if (target && target->targetInfo().id == targetId) {
+                return &activeHost;
+            }
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 struct LinkRuntime::Impl {
@@ -927,10 +952,9 @@ struct LinkRuntime::Impl {
     std::vector<DiscoveredControllerSnapshot> discovered;
 
     std::unique_ptr<libera::System> liberaSystem;
-    std::unique_ptr<virtual_controller::VirtualControllerHost> virtualControllerHost;
+    std::vector<ActiveVirtualControllerHost> virtualControllerHosts;
     std::thread monitorThread;
     std::vector<std::shared_ptr<LiberaTarget>> targets;
-    std::vector<virtual_controller::VirtualControllerEndpoint> endpoints;
     std::string activeVirtualControllerHostId;
     std::string activeVirtualControllerHostDisplayName;
 
@@ -1124,13 +1148,6 @@ bool LinkRuntime::start(const LinkOptions& options) {
 
 bool LinkRuntime::start(const LinkOptions& options,
                           const std::set<std::string>& selectedControllerIds) {
-    const auto selectedVirtualControllerHostInfo = [&]() -> std::optional<virtual_controller::VirtualControllerHostInfo> {
-        if (!options.virtualControllerHostId.empty()) {
-            return virtual_controller::findVirtualControllerHost(options.virtualControllerHostId);
-        }
-        return virtual_controller::defaultVirtualControllerHost();
-    }();
-
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (impl_->state == RuntimeState::Scanning ||
@@ -1148,10 +1165,16 @@ bool LinkRuntime::start(const LinkOptions& options,
     impl_->logger->clear();
     impl_->stopRequested.store(false, std::memory_order_relaxed);
 
-    if (!selectedVirtualControllerHostInfo) {
-        const std::string error = options.virtualControllerHostId.empty()
-                                      ? "No virtual controller hosts are registered."
-                                      : "Unknown virtual controller host \"" + options.virtualControllerHostId + "\".";
+    const auto fallbackVirtualControllerHostInfo = [&]() -> std::optional<virtual_controller::VirtualControllerHostInfo> {
+        if (!options.virtualControllerHostId.empty()) {
+            return virtual_controller::findVirtualControllerHost(options.virtualControllerHostId);
+        }
+        return virtual_controller::defaultVirtualControllerHost();
+    }();
+
+    if (!options.virtualControllerHostId.empty() && !fallbackVirtualControllerHostInfo) {
+        const std::string error = "Unknown virtual controller host \"" +
+                                  options.virtualControllerHostId + "\".";
         impl_->setState(RuntimeState::Failed, error);
         impl_->logger->error(error);
         return false;
@@ -1161,13 +1184,11 @@ bool LinkRuntime::start(const LinkOptions& options,
     libera::core::LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(0));
 
     if (selectedControllerIds.empty()) {
-        std::ostringstream oss;
-        oss << "Starting Libera Link via " << selectedVirtualControllerHostInfo->displayName;
-        impl_->logger->info(oss.str());
+        impl_->logger->info("Starting Libera Link");
     } else {
         std::ostringstream oss;
-        oss << "Starting Libera Link via " << selectedVirtualControllerHostInfo->displayName
-            << " for " << selectedControllerIds.size() << " selected controller(s)";
+        oss << "Starting Libera Link for " << selectedControllerIds.size()
+            << " selected controller(s)";
         impl_->logger->info(oss.str());
     }
 
@@ -1290,64 +1311,183 @@ bool LinkRuntime::start(const LinkOptions& options,
         return false;
     }
 
-    virtual_controller::VirtualControllerHostContext startContext;
-    startContext.targets.reserve(targets.size());
+    struct PendingVirtualControllerHostGroup {
+        virtual_controller::VirtualControllerHostInfo info;
+        std::string instanceKey;
+        std::unordered_map<std::string, std::string> options;
+        std::vector<std::shared_ptr<LiberaTarget>> targets;
+    };
+
+    std::unordered_map<std::string, VirtualControllerRoute> routesByControllerId;
+    routesByControllerId.reserve(options.virtualControllerRoutes.size());
+    for (const auto& route : options.virtualControllerRoutes) {
+        if (!route.controllerId.empty()) {
+            routesByControllerId[route.controllerId] = route;
+        }
+    }
+
+    std::vector<PendingVirtualControllerHostGroup> hostGroups;
+    hostGroups.reserve(targets.size());
     for (const auto& target : targets) {
-        startContext.targets.push_back(virtual_controller::Target{target});
+        const auto routeIt = routesByControllerId.find(target->targetInfo().id);
+        const VirtualControllerRoute* route =
+            routeIt != routesByControllerId.end() ? &routeIt->second : nullptr;
+
+        std::optional<virtual_controller::VirtualControllerHostInfo> hostInfo;
+        if (route != nullptr && !route->hostId.empty()) {
+            hostInfo = virtual_controller::findVirtualControllerHost(route->hostId);
+        } else {
+            hostInfo = fallbackVirtualControllerHostInfo;
+        }
+
+        if (!hostInfo) {
+            const std::string hostId =
+                route != nullptr && !route->hostId.empty() ? route->hostId : options.virtualControllerHostId;
+            const std::string error = hostId.empty()
+                                          ? "No virtual controller hosts are registered."
+                                          : "Unknown virtual controller host \"" + hostId + "\".";
+            targets.clear();
+            impl_->setState(RuntimeState::Failed, error);
+            impl_->logger->error(error);
+            return false;
+        }
+
+        const std::string instanceKey =
+            route != nullptr && !route->hostInstanceKey.empty()
+                ? route->hostInstanceKey
+                : hostInfo->separateInstancePerTarget
+                      ? target->targetInfo().id
+                      : hostInfo->id;
+        const auto& hostOptions =
+            route != nullptr ? route->options : options.virtualControllerHostOptions;
+
+        auto groupIt = std::find_if(
+            hostGroups.begin(), hostGroups.end(),
+            [&](const PendingVirtualControllerHostGroup& group) {
+                return group.info.id == hostInfo->id &&
+                       group.instanceKey == instanceKey &&
+                       group.options == hostOptions;
+            });
+        if (groupIt == hostGroups.end()) {
+            PendingVirtualControllerHostGroup group;
+            group.info = *hostInfo;
+            group.instanceKey = instanceKey;
+            group.options = hostOptions;
+            hostGroups.push_back(std::move(group));
+            groupIt = std::prev(hostGroups.end());
+        }
+        groupIt->targets.push_back(target);
     }
 
-    virtual_controller::VirtualControllerHostConfig virtualControllerHostConfig;
-    virtualControllerHostConfig.sliceDurationUs = options.sliceDurationUs;
-    virtualControllerHostConfig.options = options.virtualControllerHostOptions;
-
-    std::string startupError;
-    auto virtualControllerHost = virtual_controller::createVirtualControllerHost(selectedVirtualControllerHostInfo->id, virtualControllerHostConfig, startupError);
-    if (!virtualControllerHost) {
-        targets.clear();
-        impl_->setState(RuntimeState::Failed, startupError);
-        impl_->logger->error(startupError);
-        return false;
-    }
-
-    if (!virtualControllerHost->start(startContext, startupError)) {
-        if (startupError.empty()) {
-            startupError = std::string(selectedVirtualControllerHostInfo->displayName) +
-                " virtual controller host failed to start.";
+    std::vector<ActiveVirtualControllerHost> activeVirtualControllerHosts;
+    activeVirtualControllerHosts.reserve(hostGroups.size());
+    auto failStart = [&](const std::string& error) {
+        for (auto& activeHost : activeVirtualControllerHosts) {
+            if (activeHost.host) {
+                activeHost.host->stop();
+            }
         }
         targets.clear();
-        impl_->setState(RuntimeState::Failed, startupError);
-        impl_->logger->error(startupError);
+        impl_->setState(RuntimeState::Failed, error);
+        impl_->logger->error(error);
         return false;
-    }
+    };
 
-    if (impl_->stopRequested.load(std::memory_order_relaxed)) {
-        virtualControllerHost->stop();
-        targets.clear();
-        impl_->setState(RuntimeState::Stopped, "Stopped");
-        impl_->logger->info("Link start cancelled.");
-        return false;
-    }
-
-    auto endpoints = virtualControllerHost->endpoints();
-    const std::string activeVirtualControllerHostId = selectedVirtualControllerHostInfo->id;
-    const std::string activeVirtualControllerHostDisplayName = std::string(virtualControllerHost->displayName());
-    for (const auto& target : targets) {
-        const auto* endpoint = endpointForTarget(endpoints, target->targetInfo().id);
-        std::ostringstream oss;
-        oss << "Linked " << target->targetInfo().label
-            << " [" << target->targetInfo().type << ":" << target->targetInfo().id << "]"
-            << " via " << activeVirtualControllerHostDisplayName;
-        if (endpoint != nullptr && !endpoint->label.empty()) {
-            oss << " -> " << endpoint->label;
+    for (const auto& group : hostGroups) {
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            std::ostringstream oss;
+            oss << "Starting " << group.info.displayName << "...";
+            impl_->statusMessage = oss.str();
         }
-        impl_->logger->info(oss.str());
+
+        virtual_controller::VirtualControllerHostContext startContext;
+        startContext.targets.reserve(group.targets.size());
+        for (const auto& target : group.targets) {
+            startContext.targets.push_back(virtual_controller::Target{target});
+        }
+
+        virtual_controller::VirtualControllerHostConfig virtualControllerHostConfig;
+        virtualControllerHostConfig.sliceDurationUs = options.sliceDurationUs;
+        virtualControllerHostConfig.options = group.options;
+
+        std::string startupError;
+        auto virtualControllerHost =
+            virtual_controller::createVirtualControllerHost(group.info.id,
+                                                            virtualControllerHostConfig,
+                                                            startupError);
+        if (!virtualControllerHost) {
+            return failStart(startupError);
+        }
+
+        if (!virtualControllerHost->start(startContext, startupError)) {
+            if (startupError.empty()) {
+                startupError = group.info.displayName + " virtual controller host failed to start.";
+            }
+            return failStart(startupError);
+        }
+
+        if (impl_->stopRequested.load(std::memory_order_relaxed)) {
+            virtualControllerHost->stop();
+            for (auto& activeHost : activeVirtualControllerHosts) {
+                if (activeHost.host) {
+                    activeHost.host->stop();
+                }
+            }
+            targets.clear();
+            impl_->setState(RuntimeState::Stopped, "Stopped");
+            impl_->logger->info("Link start cancelled.");
+            return false;
+        }
+
+        ActiveVirtualControllerHost activeHost;
+        activeHost.id = group.info.id;
+        activeHost.displayName = std::string(virtualControllerHost->displayName());
+        activeHost.instanceKey = group.instanceKey;
+        activeHost.targets = group.targets;
+        activeHost.endpoints = virtualControllerHost->endpoints();
+        activeHost.host = std::move(virtualControllerHost);
+        activeVirtualControllerHosts.push_back(std::move(activeHost));
+    }
+
+    std::string activeVirtualControllerHostId;
+    std::string activeVirtualControllerHostDisplayName;
+    if (activeVirtualControllerHosts.size() == 1) {
+        activeVirtualControllerHostId = activeVirtualControllerHosts.front().id;
+        activeVirtualControllerHostDisplayName = activeVirtualControllerHosts.front().displayName;
+    } else if (!activeVirtualControllerHosts.empty()) {
+        const bool sameHostType = std::all_of(
+            activeVirtualControllerHosts.begin(), activeVirtualControllerHosts.end(),
+            [&](const ActiveVirtualControllerHost& activeHost) {
+                return activeHost.id == activeVirtualControllerHosts.front().id;
+            });
+        activeVirtualControllerHostId = sameHostType
+            ? activeVirtualControllerHosts.front().id
+            : "mixed";
+        activeVirtualControllerHostDisplayName = sameHostType
+            ? activeVirtualControllerHosts.front().displayName + " (" +
+                  std::to_string(activeVirtualControllerHosts.size()) + " instances)"
+            : "Multiple virtual controllers";
+    }
+
+    for (const auto& activeHost : activeVirtualControllerHosts) {
+        for (const auto& target : activeHost.targets) {
+            const auto* endpoint = endpointForTarget(activeHost.endpoints, target->targetInfo().id);
+            std::ostringstream oss;
+            oss << "Linked " << target->targetInfo().label
+                << " [" << target->targetInfo().type << ":" << target->targetInfo().id << "]"
+                << " via " << activeHost.displayName;
+            if (endpoint != nullptr && !endpoint->label.empty()) {
+                oss << " -> " << endpoint->label;
+            }
+            impl_->logger->info(oss.str());
+        }
     }
 
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->virtualControllerHost = std::move(virtualControllerHost);
+        impl_->virtualControllerHosts = std::move(activeVirtualControllerHosts);
         impl_->targets = std::move(targets);
-        impl_->endpoints = std::move(endpoints);
         impl_->activeVirtualControllerHostId = activeVirtualControllerHostId;
         impl_->activeVirtualControllerHostDisplayName = activeVirtualControllerHostDisplayName;
         impl_->state = RuntimeState::Running;
@@ -1392,27 +1532,29 @@ void LinkRuntime::stop() {
         monitorThread.join();
     }
 
-    std::unique_ptr<virtual_controller::VirtualControllerHost> virtualControllerHost;
+    std::vector<ActiveVirtualControllerHost> activeVirtualControllerHosts;
     std::vector<std::shared_ptr<LiberaTarget>> targets;
     bool hadActiveResources = false;
 
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        hadActiveResources = impl_->virtualControllerHost != nullptr ||
+        hadActiveResources = !impl_->virtualControllerHosts.empty() ||
                              !impl_->targets.empty() ||
                              impl_->state != RuntimeState::Stopped;
-        virtualControllerHost = std::move(impl_->virtualControllerHost);
+        activeVirtualControllerHosts = std::move(impl_->virtualControllerHosts);
         targets = std::move(impl_->targets);
-        impl_->endpoints.clear();
         impl_->activeVirtualControllerHostId.clear();
         impl_->activeVirtualControllerHostDisplayName.clear();
         impl_->state = RuntimeState::Stopped;
         impl_->statusMessage = "Stopped";
     }
 
-    if (virtualControllerHost) {
-        virtualControllerHost->stop();
+    for (auto& activeHost : activeVirtualControllerHosts) {
+        if (activeHost.host) {
+            activeHost.host->stop();
+        }
     }
+    activeVirtualControllerHosts.clear();
     targets.clear();
 
     impl_->stopRequested.store(false, std::memory_order_relaxed);
@@ -1436,10 +1578,18 @@ RuntimeSnapshot LinkRuntime::snapshot() const {
         snapshot.startedEndpoints = impl_->targets.size();
         snapshot.endpoints.reserve(impl_->targets.size());
         for (const auto& target : impl_->targets) {
+            const auto* activeHost =
+                activeHostForTarget(impl_->virtualControllerHosts, target->targetInfo().id);
+            const std::string_view activeHostId =
+                activeHost != nullptr ? std::string_view(activeHost->id) : std::string_view{};
+            const std::string_view activeHostDisplayName =
+                activeHost != nullptr ? std::string_view(activeHost->displayName) : std::string_view{};
             snapshot.endpoints.push_back(target->snapshot(
-                impl_->activeVirtualControllerHostId,
-                impl_->activeVirtualControllerHostDisplayName,
-                endpointForTarget(impl_->endpoints, target->targetInfo().id)));
+                activeHostId,
+                activeHostDisplayName,
+                activeHost != nullptr
+                    ? endpointForTarget(activeHost->endpoints, target->targetInfo().id)
+                    : nullptr));
         }
     }
 
