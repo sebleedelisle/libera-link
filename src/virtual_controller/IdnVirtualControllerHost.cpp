@@ -15,6 +15,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -24,6 +25,11 @@ namespace {
 
 using libera::core::LaserPoint;
 using namespace std::chrono_literals;
+
+std::string makeVirtualControllerId(const TargetInfo& targetInfo) {
+    const std::string& sourceId = !targetInfo.id.empty() ? targetInfo.id : targetInfo.label;
+    return std::string("LL") + sourceId;
+}
 
 VirtualControllerHostRegistrar gIdnVirtualControllerHostRegistrar({
     {
@@ -40,9 +46,9 @@ VirtualControllerHostRegistrar gIdnVirtualControllerHostRegistrar({
 
 class IdnTransportAdapter final : public DACHWInterface {
 public:
-    explicit IdnTransportAdapter(std::shared_ptr<TargetSink> sink)
+    IdnTransportAdapter(std::shared_ptr<TargetSink> sink, std::string displayName)
         : sink_(std::move(sink))
-        , displayName_(sink_ ? sink_->targetInfo().label : std::string{})
+        , displayName_(std::move(displayName))
         , maxPointRateValue_(
               sink_ && sink_->targetInfo().maxPointRate > 0
                   ? sink_->targetInfo().maxPointRate
@@ -189,15 +195,15 @@ class IdnTargetSession {
 public:
     IdnTargetSession(std::shared_ptr<TargetSink> sink,
                      std::uint8_t serviceId,
+                     std::string virtualControllerId,
                      std::uint32_t sliceDurationUs)
         : sink_(std::move(sink))
         , serviceId_(serviceId)
+        , virtualControllerId_(std::move(virtualControllerId))
         , sliceDurationUs_(sliceDurationUs)
-        , adapter_(std::make_shared<IdnTransportAdapter>(sink_))
+        , adapter_(std::make_shared<IdnTransportAdapter>(sink_, virtualControllerId_))
         , output_(std::make_unique<V1LaproGraphicOutput>(adapter_)) {
-        const std::string linkedServiceName =
-            std::string("Libera Link ") + sink_->targetInfo().label;
-        std::vector<char> serviceName(linkedServiceName.begin(), linkedServiceName.end());
+        std::vector<char> serviceName(virtualControllerId_.begin(), virtualControllerId_.end());
         serviceName.push_back('\0');
         const bool isDefault = (serviceId_ == 1);
         service_ = std::make_unique<IDNLaproService>(
@@ -327,6 +333,7 @@ private:
 
     std::shared_ptr<TargetSink> sink_;
     std::uint8_t serviceId_ = 0;
+    std::string virtualControllerId_;
     std::uint32_t sliceDurationUs_ = 0;
     std::shared_ptr<IdnTransportAdapter> adapter_;
     std::unique_ptr<V1LaproGraphicOutput> output_;
@@ -398,22 +405,27 @@ bool IdnVirtualControllerHost::start(const VirtualControllerHostContext& context
             return false;
         }
 
+        const std::string virtualControllerId =
+            makeVirtualControllerId(target.sink->targetInfo());
+
         auto session = std::make_unique<IdnTargetSession>(
             target.sink,
             static_cast<std::uint8_t>(serviceIdRaw),
+            virtualControllerId,
             sliceDurationUs_);
         session->linkService(&firstService);
         session->start();
 
         VirtualControllerEndpoint endpoint;
         endpoint.targetId = target.sink->targetInfo().id;
-        endpoint.label = "IDN service " + std::to_string(serviceIdRaw);
-        endpoint.value = std::to_string(serviceIdRaw);
+        endpoint.label = virtualControllerId;
+        endpoint.value = virtualControllerId;
         endpoint.kind = "service";
         endpoint.protocol = "OpenIDN";
         endpoint.transport = "udp";
         endpoint.address = "0.0.0.0";
         endpoint.port = 7255;
+        endpoint.attributes["virtual_controller_id"] = virtualControllerId;
         endpoint.attributes["service_id"] = std::to_string(serviceIdRaw);
         endpoints_.push_back(std::move(endpoint));
         sessions.push_back(std::move(session));

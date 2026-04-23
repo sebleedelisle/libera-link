@@ -1,5 +1,6 @@
 # Libera Link
 
+
 Libera Link is a translator app for laser controllers. It finds controllers
 through Libera, then exposes them as software-facing virtual controllers that
 other laser software can talk to.
@@ -7,6 +8,17 @@ other laser software can talk to.
 The first built-in virtual controller is OpenIDN / IDN. That means non-IDN
 controllers such as Ether Dream, Helios USB, LaserCube, AVB, and plugin-backed
 controllers can be made visible to IDN clients.
+
+It can also provide a network interface for USB devices - so connect all of your Helios
+to a small computer at stage and talk to it from another computer at front of house. 
+
+More end points will be added soon, along with a plug-in architecture for the host side as well as the output side. 
+
+
+## OMNIA LIBERA INTER SE
+### Any software. Any Laser. 
+
+Libera Link is part of the Libera series of apps and open source code with the mission to improve interoperability between lasers and software. 
 
 ## Using The App
 
