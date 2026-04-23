@@ -22,7 +22,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(LIBERA_LINK_APP_VERSION "${PROJECT_VERSION}")
 set(LIBERA_LINK_APP_BUNDLE_NAME "Libera Link")
 
-option(LIBERA_LINK_USE_BUNDLED_LIBUSB "Use bundled libusb from libera-laser dependency tree" ON)
+if(APPLE OR WIN32)
+  set(LIBERA_LINK_DEFAULT_BUNDLED_LIBUSB ON)
+else()
+  set(LIBERA_LINK_DEFAULT_BUNDLED_LIBUSB OFF)
+endif()
+option(LIBERA_LINK_USE_BUNDLED_LIBUSB
+    "Use bundled libusb from libera-laser dependency tree"
+    ${LIBERA_LINK_DEFAULT_BUNDLED_LIBUSB})
 option(LIBERA_LINK_OPENIDN_LINK_MODE "Enable Link-specific OpenIDN behavior changes" ON)
 option(LIBERA_LINK_BUILD_GUI "Build the native GUI target when ImGui/GLFW sources are available" ON)
 
