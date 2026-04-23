@@ -30,6 +30,21 @@ std::filesystem::path disabledControllerTypesPath() {
            "disabled-controller-types.txt";
 }
 
+std::filesystem::path defaultVirtualControllerHostPath() {
+    return std::filesystem::path(libera_link::settingsDirectory()) /
+           "default-virtual-controller-host.txt";
+}
+
+std::filesystem::path controllerHostRoutesPath() {
+    return std::filesystem::path(libera_link::settingsDirectory()) /
+           "controller-host-routes.txt";
+}
+
+std::filesystem::path enabledControllersPath() {
+    return std::filesystem::path(libera_link::settingsDirectory()) /
+           "enabled-controllers.txt";
+}
+
 std::string trimSettingLine(const std::string& line) {
     const auto begin = line.find_first_not_of(" \t\r\n");
     if (begin == std::string::npos) {
@@ -39,7 +54,12 @@ std::string trimSettingLine(const std::string& line) {
     return line.substr(begin, end - begin + 1);
 }
 
-std::set<std::string> loadDisabledControllerTypes() {
+std::set<std::string>
+loadDisabledControllerTypes(const std::set<std::string>& fallbackDisabledTypes) {
+    if (!std::filesystem::exists(disabledControllerTypesPath())) {
+        return fallbackDisabledTypes;
+    }
+
     std::set<std::string> disabledTypes;
     std::ifstream input(disabledControllerTypesPath());
     std::string line;
@@ -57,6 +77,79 @@ void saveDisabledControllerTypes(const std::set<std::string>& disabledTypes) {
     std::ofstream output(disabledControllerTypesPath(), std::ios::trunc);
     for (const auto& type : disabledTypes) {
         output << type << '\n';
+    }
+}
+
+std::string loadDefaultVirtualControllerHostId() {
+    std::ifstream input(defaultVirtualControllerHostPath());
+    std::string line;
+    if (std::getline(input, line)) {
+        return trimSettingLine(line);
+    }
+    return {};
+}
+
+void saveDefaultVirtualControllerHostId(const std::string& hostId) {
+    std::ofstream output(defaultVirtualControllerHostPath(), std::ios::trunc);
+    if (!hostId.empty()) {
+        output << hostId << '\n';
+    }
+}
+
+std::unordered_map<std::string, std::string> loadControllerHostRoutes() {
+    std::unordered_map<std::string, std::string> routes;
+    std::ifstream input(controllerHostRoutesPath());
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trimSettingLine(line);
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) {
+            continue;
+        }
+
+        std::string controllerId = trimSettingLine(line.substr(0, tab));
+        std::string hostId = trimSettingLine(line.substr(tab + 1));
+        if (!controllerId.empty() && !hostId.empty()) {
+            routes[std::move(controllerId)] = std::move(hostId);
+        }
+    }
+    return routes;
+}
+
+void saveControllerHostRoutes(const std::unordered_map<std::string, std::string>& routes) {
+    std::ofstream output(controllerHostRoutesPath(), std::ios::trunc);
+    std::vector<std::pair<std::string, std::string>> sortedRoutes(
+        routes.begin(), routes.end());
+    std::sort(sortedRoutes.begin(), sortedRoutes.end());
+    for (const auto& route : sortedRoutes) {
+        if (!route.first.empty() && !route.second.empty()) {
+            output << route.first << '\t' << route.second << '\n';
+        }
+    }
+}
+
+std::set<std::string> loadEnabledControllers() {
+    std::set<std::string> enabledControllers;
+    std::ifstream input(enabledControllersPath());
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trimSettingLine(line);
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+        enabledControllers.insert(std::move(line));
+    }
+    return enabledControllers;
+}
+
+void saveEnabledControllers(const std::set<std::string>& enabledControllers) {
+    std::ofstream output(enabledControllersPath(), std::ios::trunc);
+    for (const auto& controllerId : enabledControllers) {
+        output << controllerId << '\n';
     }
 }
 
@@ -160,7 +253,9 @@ void drawLinkNode(ImDrawList* drawList,
                   ImU32 borderColor,
                   ImU32 textColor,
                   ImU32 lightColor,
-                  bool lightGlow) {
+                  bool lightGlow,
+                  const std::string& secondaryLabel = std::string(),
+                  ImU32 secondaryTextColor = IM_COL32(168, 178, 190, 235)) {
     const float rounding = 8.0f;
     drawList->AddRectFilled(min, max, fillColor, rounding);
     drawList->AddRect(min, max, borderColor, rounding, 0, 1.2f);
@@ -169,11 +264,24 @@ void drawLinkNode(ImDrawList* drawList,
     const ImVec2 lightCenter(min.x + 18.0f, (min.y + max.y) * 0.5f);
     drawStatusLight(drawList, lightCenter, lightRadius, lightColor, lightGlow);
 
+    const ImVec2 textMin(min.x + 34.0f, min.y + 4.0f);
+    const ImVec2 textMax(max.x - 12.0f, max.y - 4.0f);
+    if (secondaryLabel.empty()) {
+        drawClippedText(drawList, textMin, textMax, label, textColor);
+        return;
+    }
+
+    const float splitY = min.y + (max.y - min.y) * 0.52f;
     drawClippedText(drawList,
-                    ImVec2(min.x + 34.0f, min.y + 4.0f),
-                    ImVec2(max.x - 12.0f, max.y - 4.0f),
+                    ImVec2(textMin.x, min.y + 2.0f),
+                    ImVec2(textMax.x, splitY + 1.0f),
                     label,
                     textColor);
+    drawClippedText(drawList,
+                    ImVec2(textMin.x, splitY - 1.0f),
+                    ImVec2(textMax.x, max.y - 2.0f),
+                    secondaryLabel,
+                    secondaryTextColor);
 }
 
 void subtractWireGap(std::vector<std::pair<float, float>>& segments, float gapStart, float gapEnd) {
@@ -288,7 +396,12 @@ int main() {
     if (const auto defaultVirtualControllerHost = libera_link::virtual_controller::defaultVirtualControllerHost()) {
         linkOptions.virtualControllerHostId = defaultVirtualControllerHost->id;
     }
-    std::set<std::string> disabledControllerTypes = loadDisabledControllerTypes();
+    if (const auto savedVirtualControllerHostId = loadDefaultVirtualControllerHostId();
+        !savedVirtualControllerHostId.empty()) {
+        linkOptions.virtualControllerHostId = savedVirtualControllerHostId;
+    }
+    std::set<std::string> disabledControllerTypes =
+        loadDisabledControllerTypes(linkOptions.disabledControllerTypes);
     linkOptions.disabledControllerTypes = disabledControllerTypes;
 
     std::future<bool> scanFuture;
@@ -302,8 +415,8 @@ int main() {
     bool showLogsWindow = false;
     bool showPluginsWindow = false;
     bool showSettingsWindow = false;
-    std::set<std::string> enabledControllers; // IDs of controllers selected for linking
-    std::unordered_map<std::string, std::string> controllerHostRoutes;
+    std::set<std::string> enabledControllers = loadEnabledControllers();
+    std::unordered_map<std::string, std::string> controllerHostRoutes = loadControllerHostRoutes();
 
     auto launchSelectedStart = [&](std::set<std::string> selectedIds) {
         if (selectedIds.empty()) {
@@ -404,6 +517,7 @@ int main() {
                 linkOptions.virtualControllerHostId.clear();
             }
         }
+        bool controllerHostRoutesChanged = false;
         for (auto it = controllerHostRoutes.begin(); it != controllerHostRoutes.end();) {
             const auto hostIt = std::find_if(
                 availableVirtualControllerHosts.begin(), availableVirtualControllerHosts.end(),
@@ -412,9 +526,13 @@ int main() {
                 });
             if (hostIt == availableVirtualControllerHosts.end()) {
                 it = controllerHostRoutes.erase(it);
+                controllerHostRoutesChanged = true;
             } else {
                 ++it;
             }
+        }
+        if (controllerHostRoutesChanged) {
+            saveControllerHostRoutes(controllerHostRoutes);
         }
 
         if (snapshot.hasDiscoveryResults) {
@@ -425,20 +543,17 @@ int main() {
                 }
             }
 
+            bool enabledControllersChanged = false;
             for (auto it = enabledControllers.begin(); it != enabledControllers.end();) {
                 if (linkableControllerIds.find(*it) == linkableControllerIds.end()) {
                     it = enabledControllers.erase(it);
+                    enabledControllersChanged = true;
                 } else {
                     ++it;
                 }
             }
-
-            for (auto it = controllerHostRoutes.begin(); it != controllerHostRoutes.end();) {
-                if (linkableControllerIds.find(it->first) == linkableControllerIds.end()) {
-                    it = controllerHostRoutes.erase(it);
-                } else {
-                    ++it;
-                }
+            if (enabledControllersChanged) {
+                saveEnabledControllers(enabledControllers);
             }
         }
 
@@ -541,8 +656,8 @@ int main() {
         const bool showTopError = !snapshot.lastError.empty() &&
                                   snapshot.state == libera_link::RuntimeState::Failed;
         const float overviewHeight =
-            (ImGui::GetFrameHeightWithSpacing() * 2.45f) +
-            (ImGui::GetTextLineHeightWithSpacing() * (showTopError ? 3.1f : 2.35f)) +
+            (ImGui::GetFrameHeightWithSpacing() * 1.35f) +
+            (ImGui::GetTextLineHeightWithSpacing() * (showTopError ? 2.8f : 1.9f)) +
             12.0f;
         ImGui::BeginChild("LinkOverview", ImVec2(0.0f, overviewHeight), true, ImGuiWindowFlags_NoScrollbar);
 
@@ -576,64 +691,28 @@ int main() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Logs", ImVec2(100.0f, 0.0f))) {
-            showLogsWindow = true;
+        const bool startAllDisabled =
+            scanInFlight || startInFlight || stopInFlight || rescanInFlight || linkableCount() == 0;
+        if (startAllDisabled) {
+            ImGui::BeginDisabled();
         }
-
-        ImGui::SameLine();
-        if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
-            showPluginsWindow = true;
+        if (ImGui::Button("START ALL", ImVec2(140.0f, 0.0f))) {
+            enabledControllers.clear();
+            for (const auto& controller : snapshot.discovered) {
+                if (controller.linkable) {
+                    enabledControllers.insert(controller.id);
+                }
+            }
+            saveEnabledControllers(enabledControllers);
+            linkSyncPending = true;
+        }
+        if (startAllDisabled) {
+            ImGui::EndDisabled();
         }
 
         ImGui::SameLine();
         if (ImGui::Button(ICON_FK_COG "  Settings", ImVec2(140.0f, 0.0f))) {
             showSettingsWindow = true;
-        }
-
-        ImGui::Spacing();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("Default Virtual Controller");
-        ImGui::SameLine();
-        if (availableVirtualControllerHosts.empty()) {
-            ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", "None registered");
-        } else {
-            const bool virtualControllerSelectionDisabled =
-                startInFlight || stopInFlight || scanInFlight || rescanInFlight;
-            if (virtualControllerSelectionDisabled) {
-                ImGui::BeginDisabled();
-            }
-
-            const auto activeVirtualControllerHostIt =
-                virtualControllerHostInfoForId(linkOptions.virtualControllerHostId);
-            const std::string preview = activeVirtualControllerHostIt != availableVirtualControllerHosts.end()
-                ? activeVirtualControllerHostIt->displayName
-                : linkOptions.virtualControllerHostId;
-            if (ImGui::BeginCombo("##virtual-controller-host", preview.c_str())) {
-                for (const auto& virtualControllerHost : availableVirtualControllerHosts) {
-                    const bool selected = (virtualControllerHost.id == linkOptions.virtualControllerHostId);
-                    if (ImGui::Selectable(virtualControllerHost.displayName.c_str(), selected)) {
-                        linkOptions.virtualControllerHostId = virtualControllerHost.id;
-                        linkSyncPending = true;
-                    }
-                    if (!virtualControllerHost.description.empty() && ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("%s", virtualControllerHost.description.c_str());
-                    }
-                    if (selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-
-            if (virtualControllerSelectionDisabled) {
-                ImGui::EndDisabled();
-            }
-
-            if (activeVirtualControllerHostIt != availableVirtualControllerHosts.end() &&
-                !activeVirtualControllerHostIt->description.empty()) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", activeVirtualControllerHostIt->description.c_str());
-            }
         }
 
         ImGui::Spacing();
@@ -661,6 +740,12 @@ int main() {
                               ImVec2(0.0f, ImGui::GetContentRegionAvail().y),
                               false,
                               ImGuiWindowFlags_AlwaysVerticalScrollbar);
+            const ImVec2 itemSpacing = ImGui::GetStyle().ItemSpacing;
+            constexpr float controllerRowGapY = 2.0f;
+            constexpr float controllerRowPadY = 2.0f;
+            constexpr float controllerNodeHeight = 40.0f;
+            ImGui::PushStyleVar(
+                ImGuiStyleVar_ItemSpacing, ImVec2(itemSpacing.x, controllerRowGapY));
             for (const auto& controller : snapshot.discovered) {
                 ImGui::PushID(controller.id.c_str());
 
@@ -669,16 +754,16 @@ int main() {
                     endpointIt != endpointByControllerId.end() ? endpointIt->second : nullptr;
                 bool selected = enabledControllers.count(controller.id) > 0;
                 const bool disabled = !controller.linkable;
-                const float rowWidth = std::max(ImGui::GetContentRegionAvail().x - 6.0f, 420.0f);
-                const float rowHeight = 86.0f;
+                const float rowWidth = std::max(ImGui::GetContentRegionAvail().x - 4.0f, 420.0f);
+                const float rowHeight = controllerNodeHeight + (controllerRowPadY * 2.0f);
                 const ImVec2 rowMin = ImGui::GetCursorScreenPos();
                 const ImVec2 rowMax(rowMin.x + rowWidth, rowMin.y + rowHeight);
-                const float innerPadX = 14.0f;
-                const float nodeHeight = 46.0f;
-                const float centerY = rowMin.y + rowHeight * 0.5f;
-                float hostWidth = std::clamp(rowWidth * 0.28f, 180.0f, 300.0f);
-                float controllerWidth = std::clamp(rowWidth * 0.34f, 220.0f, 380.0f);
-                const float maxNodeWidth = rowWidth - (innerPadX * 2.0f) - 120.0f;
+                const float innerPadX = 4.0f;
+                const float nodeHeight = controllerNodeHeight;
+                const float centerY = rowMin.y + controllerRowPadY + (nodeHeight * 0.5f);
+                float hostWidth = std::clamp(rowWidth * 0.24f, 160.0f, 260.0f);
+                float controllerWidth = std::clamp(rowWidth * 0.32f, 210.0f, 360.0f);
+                const float maxNodeWidth = rowWidth - (innerPadX * 2.0f) - 96.0f;
                 if (hostWidth + controllerWidth > maxNodeWidth) {
                     const float scale = std::max(0.65f, maxNodeWidth / std::max(1.0f, hostWidth + controllerWidth));
                     hostWidth *= scale;
@@ -696,6 +781,8 @@ int main() {
                 const bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
                 const bool hostSelectorHovered =
                     rowHovered && ImGui::IsMouseHoveringRect(hostMin, hostMax);
+                const bool controllerHovered =
+                    rowHovered && ImGui::IsMouseHoveringRect(controllerMin, controllerMax);
                 const bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !disabled;
                 const bool hostSelectorClicked =
                     rowClicked && hostSelectorHovered && !availableVirtualControllerHosts.empty();
@@ -711,6 +798,7 @@ int main() {
                     } else {
                         enabledControllers.erase(controller.id);
                     }
+                    saveEnabledControllers(enabledControllers);
                     linkSyncPending = true;
                     if (startInFlight) {
                         runtime.requestStop();
@@ -748,14 +836,6 @@ int main() {
                                 ? IM_COL32(88, 164, 255, 255)
                                 : IM_COL32(95, 101, 112, 255);
 
-                const ImU32 rowFill = rowHovered
-                    ? IM_COL32(24, 31, 40, 240)
-                    : selected
-                          ? IM_COL32(19, 27, 36, 235)
-                          : IM_COL32(15, 19, 25, 220);
-                const ImU32 rowBorder = selected
-                    ? IM_COL32(78, 126, 170, 205)
-                    : IM_COL32(48, 57, 68, 155);
                 const ImU32 hostFill = hostOnline
                     ? IM_COL32(20, 48, 39, 245)
                     : hostFailed
@@ -775,8 +855,85 @@ int main() {
                 const ImU32 textColor = disabled
                     ? IM_COL32(145, 150, 158, 210)
                     : IM_COL32(228, 234, 240, 255);
+                const ImU32 secondaryTextColor = disabled
+                    ? IM_COL32(118, 125, 136, 205)
+                    : IM_COL32(166, 179, 192, 235);
 
-                auto drawRowTooltip = [&]() {
+                const auto configuredRouteIt = controllerHostRoutes.find(controller.id);
+                const bool usingDefaultVirtualController =
+                    configuredRouteIt == controllerHostRoutes.end() || configuredRouteIt->second.empty();
+                const std::string configuredControllerHostId =
+                    configuredVirtualControllerHostIdForController(controller.id);
+                const auto configuredControllerHostIt =
+                    virtualControllerHostInfoForId(configuredControllerHostId);
+                const std::string hostLabel = endpoint && !endpoint->virtualControllerHostDisplayName.empty()
+                    ? endpoint->virtualControllerHostDisplayName
+                    : configuredVirtualControllerNameForController(controller.id);
+                std::string hostSecondaryLabel;
+                if (endpoint && !endpoint->virtualControllerEndpointLabel.empty() &&
+                    endpoint->virtualControllerEndpointLabel != hostLabel) {
+                    hostSecondaryLabel = endpoint->virtualControllerEndpointLabel;
+                } else if (endpoint && !endpoint->virtualControllerEndpointAddress.empty() &&
+                           endpoint->virtualControllerEndpointPort > 0) {
+                    hostSecondaryLabel =
+                        endpoint->virtualControllerEndpointAddress + ":" +
+                        std::to_string(endpoint->virtualControllerEndpointPort);
+                }
+
+                auto drawVirtualControllerTooltip = [&]() {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("%s", hostLabel.c_str());
+                    ImGui::TextDisabled("Route: %s",
+                                        usingDefaultVirtualController ? "Default" : "Per-controller");
+                    if (configuredControllerHostIt != availableVirtualControllerHosts.end()) {
+                        ImGui::TextDisabled("ID: %s", configuredControllerHostIt->id.c_str());
+                        if (!configuredControllerHostIt->description.empty()) {
+                            ImGui::TextWrapped("%s", configuredControllerHostIt->description.c_str());
+                        }
+                    } else if (!configuredControllerHostId.empty()) {
+                        ImGui::TextDisabled("ID: %s", configuredControllerHostId.c_str());
+                    }
+                    if (endpoint) {
+                        ImGui::Separator();
+                        if (!endpoint->virtualControllerEndpointLabel.empty()) {
+                            ImGui::Text("Presented as: %s",
+                                        endpoint->virtualControllerEndpointLabel.c_str());
+                        }
+                        if (!endpoint->virtualControllerEndpointKind.empty() ||
+                            !endpoint->virtualControllerEndpointValue.empty()) {
+                            ImGui::Text("Endpoint: %s %s",
+                                        endpoint->virtualControllerEndpointKind.c_str(),
+                                        endpoint->virtualControllerEndpointValue.c_str());
+                        }
+                        if (!endpoint->virtualControllerEndpointProtocol.empty()) {
+                            ImGui::Text("Protocol: %s",
+                                        endpoint->virtualControllerEndpointProtocol.c_str());
+                        }
+                        if (!endpoint->virtualControllerEndpointTransport.empty()) {
+                            if (!endpoint->virtualControllerEndpointAddress.empty() &&
+                                endpoint->virtualControllerEndpointPort > 0) {
+                                ImGui::Text("Transport: %s %s:%u",
+                                            endpoint->virtualControllerEndpointTransport.c_str(),
+                                            endpoint->virtualControllerEndpointAddress.c_str(),
+                                            endpoint->virtualControllerEndpointPort);
+                            } else {
+                                ImGui::Text("Transport: %s",
+                                            endpoint->virtualControllerEndpointTransport.c_str());
+                            }
+                        }
+                        if (endpoint->virtualControllerEndpointChannels > 0) {
+                            ImGui::Text("Channels: %u",
+                                        endpoint->virtualControllerEndpointChannels);
+                        }
+                        ImGui::Text("Input: %u pps",
+                                    endpoint->stats.observedInputPointRate);
+                        ImGui::Text("Received: %llu points",
+                                    static_cast<unsigned long long>(endpoint->stats.receivedPoints));
+                    }
+                    ImGui::EndTooltip();
+                };
+
+                auto drawControllerTooltip = [&]() {
                     ImGui::BeginTooltip();
                     ImGui::Text("%s", controller.label.c_str());
                     ImGui::TextDisabled("ID: %s", controller.id.c_str());
@@ -834,23 +991,13 @@ int main() {
                 };
 
                 ImDrawList* drawList = ImGui::GetWindowDrawList();
-                drawList->AddRectFilled(rowMin, rowMax, rowFill, 8.0f);
-                drawList->AddRect(rowMin, rowMax, rowBorder, 8.0f, 0, 1.0f);
-
-                const auto configuredRouteIt = controllerHostRoutes.find(controller.id);
-                const bool usingDefaultVirtualController =
-                    configuredRouteIt == controllerHostRoutes.end() || configuredRouteIt->second.empty();
-                const std::string configuredControllerHostId =
-                    configuredVirtualControllerHostIdForController(controller.id);
-                const std::string hostLabel = endpoint && !endpoint->virtualControllerHostDisplayName.empty()
-                    ? endpoint->virtualControllerHostDisplayName
-                    : configuredVirtualControllerNameForController(controller.id);
 
                 if (ImGui::BeginPopup("host-route-popup")) {
                     const std::string defaultLabel =
                         "Default: " + configuredVirtualControllerName;
                     if (ImGui::Selectable(defaultLabel.c_str(), usingDefaultVirtualController)) {
                         controllerHostRoutes.erase(controller.id);
+                        saveControllerHostRoutes(controllerHostRoutes);
                         linkSyncPending = true;
                         if (startInFlight) {
                             runtime.requestStop();
@@ -870,6 +1017,7 @@ int main() {
                             } else {
                                 controllerHostRoutes[controller.id] = virtualControllerHost.id;
                             }
+                            saveControllerHostRoutes(controllerHostRoutes);
                             linkSyncPending = true;
                             if (startInFlight) {
                                 runtime.requestStop();
@@ -894,7 +1042,9 @@ int main() {
                                                  : hostOnline ? activeBorder : idleBorder,
                              textColor,
                              hostLight,
-                             hostOnline);
+                             hostOnline,
+                             hostSecondaryLabel,
+                             secondaryTextColor);
                 drawVirtualWire(drawList,
                                 wireStart,
                                 wireEnd,
@@ -912,13 +1062,17 @@ int main() {
                              controllerLight,
                              active);
 
-                if (rowHovered && !ImGui::IsPopupOpen("host-route-popup")) {
-                    drawRowTooltip();
+                if (!ImGui::IsPopupOpen("host-route-popup")) {
+                    if (controllerHovered) {
+                        drawControllerTooltip();
+                    } else if (hostSelectorHovered) {
+                        drawVirtualControllerTooltip();
+                    }
                 }
 
-                ImGui::Dummy(ImVec2(0.0f, 8.0f));
                 ImGui::PopID();
             }
+            ImGui::PopStyleVar();
             ImGui::EndChild();
         }
 
@@ -936,8 +1090,69 @@ int main() {
         ImGui::End();
 
         if (showSettingsWindow) {
-            ImGui::SetNextWindowSize(ImVec2(620.0f, 420.0f), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(620.0f, 500.0f), ImGuiCond_FirstUseEver);
             if (ImGui::Begin(ICON_FK_COG "  Settings", &showSettingsWindow, ImGuiWindowFlags_NoCollapse)) {
+                drawSectionTitle(app, "Virtual Controller");
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("Default");
+                ImGui::SameLine();
+                if (availableVirtualControllerHosts.empty()) {
+                    ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.34f, 1.0f), "%s", "None registered");
+                } else {
+                    const bool virtualControllerSelectionDisabled =
+                        startInFlight || stopInFlight || scanInFlight || rescanInFlight;
+                    if (virtualControllerSelectionDisabled) {
+                        ImGui::BeginDisabled();
+                    }
+
+                    const auto activeVirtualControllerHostIt =
+                        virtualControllerHostInfoForId(linkOptions.virtualControllerHostId);
+                    const std::string preview =
+                        activeVirtualControllerHostIt != availableVirtualControllerHosts.end()
+                            ? activeVirtualControllerHostIt->displayName
+                            : linkOptions.virtualControllerHostId;
+                    ImGui::SetNextItemWidth(260.0f);
+                    if (ImGui::BeginCombo("##settings-virtual-controller-host", preview.c_str())) {
+                        for (const auto& virtualControllerHost : availableVirtualControllerHosts) {
+                            const bool selected =
+                                virtualControllerHost.id == linkOptions.virtualControllerHostId;
+                            if (ImGui::Selectable(virtualControllerHost.displayName.c_str(), selected)) {
+                                linkOptions.virtualControllerHostId = virtualControllerHost.id;
+                                saveDefaultVirtualControllerHostId(linkOptions.virtualControllerHostId);
+                                linkSyncPending = true;
+                            }
+                            if (!virtualControllerHost.description.empty() && ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("%s", virtualControllerHost.description.c_str());
+                            }
+                            if (selected) {
+                                ImGui::SetItemDefaultFocus();
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+
+                    if (virtualControllerSelectionDisabled) {
+                        ImGui::EndDisabled();
+                    }
+
+                    if (activeVirtualControllerHostIt != availableVirtualControllerHosts.end() &&
+                        !activeVirtualControllerHostIt->description.empty()) {
+                        ImGui::TextWrapped("%s", activeVirtualControllerHostIt->description.c_str());
+                    }
+                }
+
+                ImGui::Spacing();
+                drawSectionTitle(app, "Windows");
+                if (ImGui::Button("Logs", ImVec2(120.0f, 0.0f))) {
+                    showLogsWindow = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
+                    showPluginsWindow = true;
+                }
+
+                ImGui::Separator();
+                ImGui::Spacing();
                 drawSectionTitle(app, "Controller Discovery");
 
                 const bool discoverySettingsLocked =

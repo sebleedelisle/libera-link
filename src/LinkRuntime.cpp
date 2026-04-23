@@ -851,13 +851,35 @@ std::vector<std::unique_ptr<libera::core::ControllerInfo>> discoverControllers(
     libera::System& liberaSystem,
     std::uint32_t timeoutMs,
     const std::atomic<bool>& stopRequested) {
+    constexpr auto discoverySettleWindow = 1500ms;
     auto started = std::chrono::steady_clock::now();
     std::vector<std::unique_ptr<libera::core::ControllerInfo>> discovered;
+    std::vector<std::string> discoveredKeys;
+    std::optional<std::chrono::steady_clock::time_point> lastDiscoveryChangeAt;
 
     while (!stopRequested.load(std::memory_order_relaxed)) {
-        discovered = liberaSystem.discoverControllers();
-        if (!discovered.empty()) {
-            return discovered;
+        auto current = liberaSystem.discoverControllers();
+        if (!current.empty()) {
+            std::vector<std::string> currentKeys;
+            currentKeys.reserve(current.size());
+            for (const auto& info : current) {
+                currentKeys.push_back(info->type() + '\n' + info->idValue());
+            }
+            std::sort(currentKeys.begin(), currentKeys.end());
+
+            if (currentKeys != discoveredKeys) {
+                discoveredKeys = std::move(currentKeys);
+                lastDiscoveryChangeAt = std::chrono::steady_clock::now();
+            }
+
+            discovered = std::move(current);
+        }
+
+        if (!discovered.empty() && lastDiscoveryChangeAt.has_value()) {
+            const auto settledFor = std::chrono::steady_clock::now() - *lastDiscoveryChangeAt;
+            if (settledFor >= discoverySettleWindow) {
+                return discovered;
+            }
         }
 
         if (timeoutMs > 0) {
