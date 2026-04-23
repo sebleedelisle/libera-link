@@ -44,7 +44,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "LIBERA_LINK_BUILD_GUI": "ON",
-        "LIBERA_LINK_USE_BUNDLED_LIBUSB": "ON",
+        "LIBERA_LINK_USE_BUNDLED_LIBUSB": "OFF",
         "LIBERA_BUILD_TESTS": "OFF",
         "LIBERA_BUILD_EXAMPLES": "OFF"
       }
