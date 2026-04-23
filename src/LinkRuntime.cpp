@@ -8,8 +8,10 @@
 #include "libera/etherdream/EtherDreamManager.hpp"
 #include "libera/helios/HeliosControllerInfo.hpp"
 #include "libera/helios/HeliosManager.hpp"
+#include "libera/idn/IdnManager.hpp"
 #include "libera/lasercubenet/LaserCubeNetManager.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbManager.hpp"
+#include "libera/log/Log.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -109,6 +111,13 @@ std::string describeController(const libera::core::ControllerInfo& info) {
     return oss.str();
 }
 
+std::string trimLogLine(std::string_view line) {
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+        line.remove_suffix(1);
+    }
+    return std::string(line);
+}
+
 void printUsageImpl(const char* exe, std::ostream& out) {
     virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
     const auto defaultVirtualControllerHost = virtual_controller::defaultVirtualControllerHost();
@@ -126,6 +135,7 @@ void printUsageImpl(const char* exe, std::ostream& out) {
         << "  --max-latency-ms <ms>          Max auto latency in milliseconds (default 1500)\n"
         << "  --no-auto-latency              Disable automatic latency increase on underrun\n"
         << "  --disable-controller-type <id> Disable a Libera controller manager type\n"
+        << "  --enable-controller-type <id>  Enable a default-disabled controller manager type\n"
         << "  --help                         Show this message\n";
 
     if (!availableVirtualControllerHosts.empty()) {
@@ -145,8 +155,12 @@ void printUsageImpl(const char* exe, std::ostream& out) {
     const auto availableControllerManagers = libera::System::availableControllerManagers();
     if (!availableControllerManagers.empty()) {
         out << "\nAvailable controller types:\n";
+        const LinkOptions defaultOptions;
         for (const auto& info : availableControllerManagers) {
             out << "  " << info.type << "  " << info.displayName;
+            if (defaultOptions.disabledControllerTypes.count(info.type) > 0) {
+                out << " [default off]";
+            }
             if (!info.description.empty()) {
                 out << " - " << info.description;
             }
@@ -1032,6 +1046,12 @@ ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
             continue;
         }
 
+        if (arg == "--enable-controller-type") {
+            options.disabledControllerTypes.erase(argv[i + 1]);
+            ++i;
+            continue;
+        }
+
         if (arg == "--virtual-controller-opt") {
             std::string key;
             std::string value;
@@ -1110,10 +1130,30 @@ const char* runtimeStateLabel(RuntimeState state) {
 LinkRuntime::LinkRuntime()
     : impl_(std::make_unique<Impl>()) {
     configureLiberaPluginDirectories();
+
+    std::weak_ptr<RuntimeLogger> weakLogger = impl_->logger;
+    libera::setLogHandlers(
+        [weakLogger](std::string_view line) {
+            if (auto logger = weakLogger.lock()) {
+                const auto trimmed = trimLogLine(line);
+                if (!trimmed.empty()) {
+                    logger->info("[libera] " + trimmed);
+                }
+            }
+        },
+        [weakLogger](std::string_view line) {
+            if (auto logger = weakLogger.lock()) {
+                const auto trimmed = trimLogLine(line);
+                if (!trimmed.empty()) {
+                    logger->error("[libera] " + trimmed);
+                }
+            }
+        });
 }
 
 LinkRuntime::~LinkRuntime() {
     stop();
+    libera::resetLogHandlers();
 }
 
 void LinkRuntime::setEchoLogsToStdStreams(bool enabled) {
@@ -1145,6 +1185,7 @@ bool LinkRuntime::scan(const LinkOptions& options) {
     auto discovered =
         discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
     auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
+    const bool discoveryFailed = !discovered.empty() ? false : !impl_->logger->lastError().empty();
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
         impl_->setState(RuntimeState::Stopped, "Stopped");
@@ -1157,12 +1198,16 @@ bool LinkRuntime::scan(const LinkOptions& options) {
         impl_->hasDiscoveryResults = true;
         impl_->discoveredControllers = discoveredSnapshots.size();
         impl_->discovered = std::move(discoveredSnapshots);
-        impl_->state = RuntimeState::Stopped;
-        impl_->statusMessage = discovered.empty() ? "No controllers found" : "Scan complete";
+        impl_->state = discoveryFailed ? RuntimeState::Failed : RuntimeState::Stopped;
+        impl_->statusMessage = discovered.empty()
+            ? (discoveryFailed ? "Controller discovery failed" : "No controllers found")
+            : "Scan complete";
     }
 
     if (discovered.empty()) {
-        impl_->logger->info("No controllers discovered via Libera.");
+        if (!discoveryFailed) {
+            impl_->logger->info("No controllers discovered via Libera.");
+        }
         return false;
     }
 
@@ -1230,6 +1275,7 @@ bool LinkRuntime::start(const LinkOptions& options,
     auto discovered =
         discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
     auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
+    const bool discoveryFailed = !discovered.empty() ? false : !impl_->logger->lastError().empty();
 
     if (impl_->stopRequested.load(std::memory_order_relaxed)) {
         impl_->setState(RuntimeState::Stopped, "Stopped");
@@ -1244,9 +1290,13 @@ bool LinkRuntime::start(const LinkOptions& options,
             impl_->discoveredControllers = 0;
             impl_->discovered.clear();
         }
-        const std::string error = "No controllers discovered via Libera.";
+        const std::string error = discoveryFailed
+            ? "Controller discovery failed."
+            : "No controllers discovered via Libera.";
         impl_->setState(RuntimeState::Failed, error);
-        impl_->logger->error(error);
+        if (!discoveryFailed) {
+            impl_->logger->error(error);
+        }
         return false;
     }
 
