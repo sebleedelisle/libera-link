@@ -16,9 +16,13 @@ More end points will be added soon, along with a plug-in architecture for the ho
 
 
 ## OMNIA LIBERA INTER SE
-### Any software. Any Laser. 
+### Any software. Any laser.
 
-Libera Link is part of the Libera series of apps and open source code with the mission to improve interoperability between lasers and software. 
+Libera Link is part of the growing Libera ecosystem - interoperable tools
+designed to connect lasers and software without restriction.
+
+The laser industry has been held back by closed systems and vendor lock-in.
+Libera is built to break that cycle.
 
 ## Using The App
 
