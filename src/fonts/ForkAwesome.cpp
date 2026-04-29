@@ -1,4 +1,4 @@
-// File: '.\forkawesome-lib.ttf' (227220 bytes)
+// File: 'forkawesome-lib.ttf' (227220 bytes)
 // Exported using binary_to_compressed_c.cpp
 extern const unsigned int ForkAwesome_compressed_size = 180363;
 extern const unsigned int ForkAwesome_compressed_data[180364/4] =

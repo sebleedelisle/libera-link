@@ -1,4 +1,4 @@
-// File: 'C:\Users\Seb\Dropbox\WindowsShare\Roboto\Roboto-Bold.ttf' (167336 bytes)
+// File: 'Roboto-Bold.ttf' (167336 bytes)
 // Exported using binary_to_compressed_c.cpp
 extern const unsigned int RobotoBold_compressed_size = 118267;
 extern const unsigned int RobotoBold_compressed_data[118268/4] =
