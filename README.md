@@ -5,9 +5,9 @@ Libera Link is a translator app for laser controllers. It finds controllers
 through Libera, then exposes them as software-facing virtual controllers that
 other laser software can talk to.
 
-Built-in virtual controllers include IDN and Ether Dream. That means
+The built-in virtual controller is IDN. That means
 controllers such as Ether Dream, Helios USB, LaserCube, AVB, and plugin-backed
-controllers can be made visible to other laser software.
+controllers can be made visible to IDN-aware software.
 
 It can also provide a network interface for USB devices - so connect all of your Helios
 to a small computer at stage and talk to it from another computer at front of house. 
@@ -47,21 +47,15 @@ USB scans, plugin backends, and background threads are not started.
 Already-IDN Helios network controllers are skipped automatically because they
 already expose the protocol Libera Link would provide for them.
 
-Ether Dream hardware output discovery is temporarily disabled by default. It
-can be re-enabled from Settings or with `--enable-controller-type EtherDream`.
-
 ## Virtual Controllers
 
 A virtual controller is the software-facing side of Libera Link. Its host
 presents linked Libera controllers as something another laser-control program
 can talk to.
 
-The built-in virtual controllers are:
+The built-in virtual controller is:
 
 - `idn`: exposes linked controllers as IDN services.
-- `etherdream`: exposes linked controllers as virtual Ether Dream DACs. When
-  more than one virtual DAC is active, Libera Link allocates local IP aliases so
-  every DAC can use the standard Ether Dream TCP port `7765`.
 
 More virtual controller hosts can be added in code. See
 [Writing a virtual controller host](docs/virtual-controller-hosts.md).
@@ -73,12 +67,6 @@ runtime:
 
 ```bash
 ./build/libera_link --virtual-controller idn --discovery-timeout-ms 8000 --max-dacs 4
-```
-
-Ether Dream emulation can be selected with:
-
-```bash
-./build/libera_link --virtual-controller etherdream
 ```
 
 Useful options:

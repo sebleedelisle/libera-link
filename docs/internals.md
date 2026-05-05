@@ -30,7 +30,7 @@ Important CMake options:
 - `src/virtual_controller/VirtualControllerHost.hpp`: public virtual controller host and target-sink contracts.
 - `src/virtual_controller/VirtualControllerHostRegistry.*`: source-linked virtual controller host registration and factory lookup.
 - `src/virtual_controller/IdnVirtualControllerHost.*`: built-in IDN virtual controller host.
-- `src/virtual_controller/EtherDreamVirtualControllerHost.*`: built-in Ether Dream virtual controller host, including TCP command emulation, UDP discovery beacons, and local IP alias allocation.
+- `src/virtual_controller/EtherDreamVirtualControllerHost.*`: experimental Ether Dream virtual controller host, including TCP command emulation, UDP discovery beacons, and local IP alias allocation. It is compiled and tested, but not registered by the main app while the input protocol settings model is being designed.
 - `src/third_party/openidn`: vendored IDN subset used by the IDN virtual controller host.
 - `src/main.cpp`: CLI entry point.
 - `src/gui_main.cpp`: native GUI entry point.
@@ -109,6 +109,10 @@ Because Ether Dream clients expect every DAC to listen on TCP port `7765`, the
 host gives each virtual DAC its own local IPv4 address. With multiple targets,
 the default `ip_mode=auto` path allocates aliases on the active LAN interface;
 `addresses=ip1,ip2,...` can be used when the addresses are preconfigured.
+
+This host is currently not registered by the main app. The implementation and
+tests remain in-tree so it can be re-enabled once input protocol settings are
+explicit in the UI.
 
 ## Public API Direction
 
