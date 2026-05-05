@@ -1,5 +1,6 @@
 #include "LinkRuntime.hpp"
 #include "LiberaPaths.hpp"
+#include "virtual_controller/EtherDreamVirtualControllerHost.hpp"
 #include "virtual_controller/IdnVirtualControllerHost.hpp"
 #include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
@@ -120,6 +121,7 @@ std::string trimLogLine(std::string_view line) {
 
 void printUsageImpl(const char* exe, std::ostream& out) {
     virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
+    virtual_controller::ensureBuiltInEtherDreamVirtualControllerHostLinked();
     const auto defaultVirtualControllerHost = virtual_controller::defaultVirtualControllerHost();
     const auto availableVirtualControllerHosts = virtual_controller::availableVirtualControllerHosts();
     out << "Usage: " << exe << " [options]\n"
@@ -905,6 +907,16 @@ bool shouldLinkController(const libera::core::ControllerInfo& info, std::string&
         }
     }
 
+    if (info.type() == "EtherDream") {
+        const auto* etherDreamInfo =
+            dynamic_cast<const libera::etherdream::EtherDreamControllerInfo*>(&info);
+        if (etherDreamInfo != nullptr &&
+            etherDreamInfo->hardwareVersion().rfind("hw0-", 0) == 0) {
+            reason = "virtual Ether Dream endpoint";
+            return false;
+        }
+    }
+
     reason.clear();
     return true;
 }
@@ -1040,6 +1052,7 @@ void printUsage(const char* exe) {
 ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
     configureLiberaPluginDirectories();
     virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
+    virtual_controller::ensureBuiltInEtherDreamVirtualControllerHostLinked();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help") {
@@ -1152,6 +1165,8 @@ const char* runtimeStateLabel(RuntimeState state) {
 LinkRuntime::LinkRuntime()
     : impl_(std::make_unique<Impl>()) {
     configureLiberaPluginDirectories();
+    virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
+    virtual_controller::ensureBuiltInEtherDreamVirtualControllerHostLinked();
 
     std::weak_ptr<RuntimeLogger> weakLogger = impl_->logger;
     libera::setLogHandlers(

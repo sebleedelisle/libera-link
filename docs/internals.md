@@ -21,7 +21,7 @@ Important CMake options:
 
 - `LIBERA_LINK_BUILD_GUI`: builds the native GUI target when ImGui and GLFW are available.
 - `LIBERA_LINK_USE_BUNDLED_LIBUSB`: uses the bundled libusb from the `libera-laser` dependency tree.
-- `LIBERA_LINK_OPENIDN_LINK_MODE`: enables the Libera Link OpenIDN behavior paths. The vendored OpenIDN subset currently requires this to stay `ON`.
+- `LIBERA_LINK_OPENIDN_LINK_MODE`: enables the Libera Link IDN behavior paths. The vendored IDN subset currently requires this to stay `ON`.
 - `LIBERA_LINK_BUILD_HARDWARE_TESTS`: enables tests that require hardware.
 
 ## Source Layout
@@ -29,8 +29,9 @@ Important CMake options:
 - `src/LinkRuntime.*`: runtime orchestration, discovery, linking, queueing, stats, and shutdown.
 - `src/virtual_controller/VirtualControllerHost.hpp`: public virtual controller host and target-sink contracts.
 - `src/virtual_controller/VirtualControllerHostRegistry.*`: source-linked virtual controller host registration and factory lookup.
-- `src/virtual_controller/IdnVirtualControllerHost.*`: built-in OpenIDN / IDN virtual controller host.
-- `src/third_party/openidn`: vendored OpenIDN subset used by the IDN virtual controller host.
+- `src/virtual_controller/IdnVirtualControllerHost.*`: built-in IDN virtual controller host.
+- `src/virtual_controller/EtherDreamVirtualControllerHost.*`: built-in Ether Dream virtual controller host, including TCP command emulation, UDP discovery beacons, and local IP alias allocation.
+- `src/third_party/openidn`: vendored IDN subset used by the IDN virtual controller host.
 - `src/main.cpp`: CLI entry point.
 - `src/gui_main.cpp`: native GUI entry point.
 
@@ -87,14 +88,27 @@ The runtime can increase target latency after repeated underruns, unless
 
 ## Built-In IDN Virtual Controller Host
 
-The IDN virtual controller host creates one OpenIDN service per linked target. Each service
+The IDN virtual controller host creates one IDN service per linked target. Each service
 uses the target label in its advertised name and receives a service ID starting
 at `1`.
 
-OpenIDN packets enter through the vendored `SockIDNServer`. The IDN session
+IDN packets enter through the vendored `SockIDNServer`. The IDN session
 decodes incoming chunks into `ISPDB25Point` data, converts that into Libera
 `LaserPoint` values, then submits either continuous slices or frame
 replacements to the target sink.
+
+## Built-In Ether Dream Virtual Controller Host
+
+The Ether Dream virtual controller host creates one virtual DAC per linked
+target. Each DAC sends Ether Dream UDP discovery beacons and accepts the
+standard TCP command stream, including prepare, data, begin, stop, clear,
+ping, point-rate queueing, and the common `v`/`u` firmware commands seen in
+the older tools.
+
+Because Ether Dream clients expect every DAC to listen on TCP port `7765`, the
+host gives each virtual DAC its own local IPv4 address. With multiple targets,
+the default `ip_mode=auto` path allocates aliases on the active LAN interface;
+`addresses=ip1,ip2,...` can be used when the addresses are preconfigured.
 
 ## Public API Direction
 

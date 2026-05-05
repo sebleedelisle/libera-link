@@ -30,7 +30,7 @@ endif()
 option(LIBERA_LINK_USE_BUNDLED_LIBUSB
     "Use bundled libusb from libera-laser dependency tree"
     ${LIBERA_LINK_DEFAULT_BUNDLED_LIBUSB})
-option(LIBERA_LINK_OPENIDN_LINK_MODE "Enable Link-specific OpenIDN behavior changes" ON)
+option(LIBERA_LINK_OPENIDN_LINK_MODE "Enable Link-specific IDN behavior changes" ON)
 option(LIBERA_LINK_BUILD_GUI "Build the native GUI target when ImGui/GLFW sources are available" ON)
 
 set(LIBERA_LINK_GUI_GLFW_SOURCE_DIR "" CACHE PATH "Path to a GLFW source tree for the GUI target")
@@ -99,6 +99,7 @@ endif()
 
 add_library(libera_link_core STATIC
     src/LinkRuntime.cpp
+    src/virtual_controller/EtherDreamVirtualControllerHost.cpp
     src/virtual_controller/IdnVirtualControllerHost.cpp
     src/virtual_controller/VirtualControllerHostRegistry.cpp
     src/LiberaPaths.cpp
@@ -123,6 +124,10 @@ option(LIBERA_LINK_BUILD_HARDWARE_TESTS "Build hardware tests (requires Helios U
 add_executable(test_point_stream_framer
     extern/libera-laser/tests/test_point_stream_framer.cpp)
 target_link_libraries(test_point_stream_framer PRIVATE libera-core)
+
+add_executable(test_etherdream_virtual_controller_host
+    tests/test_etherdream_virtual_controller_host.cpp)
+target_link_libraries(test_etherdream_virtual_controller_host PRIVATE libera_link_core)
 
 if(LIBERA_LINK_BUILD_HARDWARE_TESTS)
   add_executable(test_helios_usb_stream

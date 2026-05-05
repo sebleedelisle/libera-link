@@ -28,7 +28,7 @@ struct LinkOptions {
     std::string virtualControllerHostId;
     std::unordered_map<std::string, std::string> virtualControllerHostOptions;
     std::vector<VirtualControllerRoute> virtualControllerRoutes;
-    std::set<std::string> disabledControllerTypes{"IDN"};
+    std::set<std::string> disabledControllerTypes{"IDN", "EtherDream"};
 };
 
 void printUsage(const char* exe);
