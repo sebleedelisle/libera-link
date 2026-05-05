@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------------------------
 //  File ODFTaxiBuffer.hpp
 //
-//  OpenIDN DAC Framework taxi buffer for network interface input/processing
+//  IDN DAC Framework taxi buffer for network interface input/processing
 //
 //  04/2025 Dirk Apitz, created
 // -------------------------------------------------------------------------------------------------

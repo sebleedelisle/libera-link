@@ -5,8 +5,8 @@ struct ImFont;
 
 struct LiberaAppConfig {
     const char* title = "Libera Link";
-    int width = 1100;
-    int height = 760;
+    int width = 505;
+    int height = 900;
     int windowX = -1;
     int windowY = -1;
 };

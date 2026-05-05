@@ -1,4 +1,4 @@
-This directory vendors the OpenIDN Link subset used by `libera-link`.
+This directory vendors the IDN Link subset used by `libera-link`.
 
 Source:
 - Upstream repo previously tracked at `extern/helios_openidn`

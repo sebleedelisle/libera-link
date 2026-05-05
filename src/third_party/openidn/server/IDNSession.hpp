@@ -26,7 +26,7 @@
 //
 //  08/2019 Dirk Apitz, created
 //  06/2021 Dirk Apitz, handle/conduit redesign
-//  01/2024 Dirk Apitz, modifications and integration into OpenIDN
+//  01/2024 Dirk Apitz, modifications and integration into IDN
 // -------------------------------------------------------------------------------------------------
 
 

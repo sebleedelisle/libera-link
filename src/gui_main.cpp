@@ -387,7 +387,7 @@ void drawVirtualWire(ImDrawList* drawList,
 
 int main() {
     LiberaApp app;
-    if (!app.init({"Lib Port", 1180, 780, -1, -1})) {
+    if (!app.init({"Libera Link", 505, 900, -1, -1})) {
         return 1;
     }
 
@@ -638,7 +638,7 @@ int main() {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->WorkPos);
         ImGui::SetNextWindowSize(viewport->WorkSize);
-        ImGui::Begin("Lib Port", nullptr,
+        ImGui::Begin("Libera Link", nullptr,
                      ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoCollapse |
@@ -733,13 +733,11 @@ int main() {
         ImGui::Spacing();
 
         ImGui::BeginChild("DetectedDacsPanel", ImVec2(0.0f, 0.0f), true);
-        drawSectionTitle(app, "Detected Controllers");
 
         if (!snapshot.discovered.empty()) {
             ImGui::BeginChild("ControllerWireList",
                               ImVec2(0.0f, ImGui::GetContentRegionAvail().y),
-                              false,
-                              ImGuiWindowFlags_AlwaysVerticalScrollbar);
+                              false);
             const ImVec2 itemSpacing = ImGui::GetStyle().ItemSpacing;
             constexpr float controllerRowGapY = 2.0f;
             constexpr float controllerRowPadY = 2.0f;

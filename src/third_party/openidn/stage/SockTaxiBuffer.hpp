@@ -39,7 +39,7 @@ typedef struct _ODF_TAXI_SOURCE
 } ODF_TAXI_SOURCE;
 
 
-// OpenIDN uses taxi buffers as an abstraction for the underlaying network interface. They allow for
+// IDN uses taxi buffers as an abstraction for the underlaying network interface. They allow for
 // dynamic allocation, passing and storage. This is necessary for reassembly and latency Queues.
 // Please note that this struct shall not have derivations or virtual functions because of casts.
 typedef struct _ODF_TAXI_BUFFER

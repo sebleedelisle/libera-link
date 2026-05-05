@@ -25,7 +25,7 @@
 //  Change History:
 //
 //  07/2017 Dirk Apitz, created
-//  01/2024 Dirk Apitz, modifications and integration into OpenIDN
+//  01/2024 Dirk Apitz, modifications and integration into IDN
 //  04/2025 Dirk Apitz, independence from network layer through derived classes (Linux/LwIP support)
 // -------------------------------------------------------------------------------------------------
 
@@ -420,7 +420,7 @@ int SockIDNHelloConnection::clientMatchIDNHello(RECV_COOKIE *cookie, uint8_t cli
 
 
 // =================================================================================================
-//  Class OpenIDNServer
+//  Class IDNServer
 //
 // -------------------------------------------------------------------------------------------------
 //  scope: private

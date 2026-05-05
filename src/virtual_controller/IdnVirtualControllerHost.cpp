@@ -27,15 +27,15 @@ using libera::core::LaserPoint;
 using namespace std::chrono_literals;
 
 std::string makeVirtualControllerId(const TargetInfo& targetInfo) {
-    const std::string& sourceId = !targetInfo.id.empty() ? targetInfo.id : targetInfo.label;
-    return std::string("LL") + sourceId;
+    const std::string& sourceLabel = !targetInfo.label.empty() ? targetInfo.label : targetInfo.id;
+    return std::string("LL ") + sourceLabel;
 }
 
 VirtualControllerHostRegistrar gIdnVirtualControllerHostRegistrar({
     {
         "idn",
-        "OpenIDN",
-        "Expose linked controllers as OpenIDN / IDN services.",
+        "IDN",
+        "Expose linked controllers as IDN services.",
         {},
         true,
     },
@@ -373,7 +373,7 @@ std::string_view IdnVirtualControllerHost::name() const {
 }
 
 std::string_view IdnVirtualControllerHost::displayName() const {
-    return "OpenIDN";
+    return "IDN";
 }
 
 bool IdnVirtualControllerHost::start(const VirtualControllerHostContext& context, std::string& error) {
@@ -421,7 +421,7 @@ bool IdnVirtualControllerHost::start(const VirtualControllerHostContext& context
         endpoint.label = virtualControllerId;
         endpoint.value = virtualControllerId;
         endpoint.kind = "service";
-        endpoint.protocol = "OpenIDN";
+        endpoint.protocol = "IDN";
         endpoint.transport = "udp";
         endpoint.address = "0.0.0.0";
         endpoint.port = 7255;

@@ -25,7 +25,7 @@
 //  Change History:
 //
 //  01/2020 Dirk Apitz, created
-//  01/2024 Dirk Apitz, modifications and integration into OpenIDN
+//  01/2024 Dirk Apitz, modifications and integration into IDN
 // -------------------------------------------------------------------------------------------------
 
 
