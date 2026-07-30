@@ -153,6 +153,8 @@ jobs:
             --wait
 
           xcrun stapler staple "$MACOS_APP_BUNDLE"
+          xcrun stapler validate "$MACOS_APP_BUNDLE"
+          spctl --assess --type execute --verbose=4 "$MACOS_APP_BUNDLE"
 
       - name: Package DMG (macOS)
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
@@ -172,6 +174,24 @@ jobs:
 
           codesign --force --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
             libera-link-macos.dmg
+          codesign --verify --verbose=4 libera-link-macos.dmg
+
+      - name: Notarize DMG (macOS)
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit libera-link-macos.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple libera-link-macos.dmg
+          xcrun stapler validate libera-link-macos.dmg
+          spctl --assess --type open --context context:primary-signature --verbose=4 libera-link-macos.dmg
 
       - name: Sign executable (Windows)
         if: runner.os == 'Windows' && github.event_name != 'pull_request'
