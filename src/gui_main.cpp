@@ -1280,7 +1280,7 @@ int main() {
             }
         }
 
-        libera::ui::DrawPluginsWindow(&showPluginsWindow, libera_link::userPluginDirectory());
+        libera::ui::DrawPluginsWindow(&showPluginsWindow);
         app.endFrame();
     }
 

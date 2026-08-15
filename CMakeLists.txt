@@ -231,6 +231,11 @@ if(LIBERA_LINK_BUILD_GUI)
       target_link_libraries(libera_link_imgui PUBLIC OpenGL::GL)
     endif()
 
+    include("${CMAKE_CURRENT_SOURCE_DIR}/extern/libera-laser/cmake/LiberaImguiWidgets.cmake")
+    if(NOT TARGET libera-plugin-ui-imgui)
+      libera_add_imgui_plugin_ui(libera-plugin-ui-imgui libera_link_imgui)
+    endif()
+
     add_executable(libera_link_gui
         src/gui_main.cpp
         src/LiberaApp.cpp
@@ -252,7 +257,10 @@ if(LIBERA_LINK_BUILD_GUI)
     endif()
     target_include_directories(libera_link_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_definitions(libera_link_gui PRIVATE APP_VERSION="${LIBERA_LINK_APP_VERSION}")
-    target_link_libraries(libera_link_gui PRIVATE libera_link_core libera_link_imgui)
+    target_link_libraries(libera_link_gui PRIVATE
+        libera_link_core
+        libera_link_imgui
+        libera-plugin-ui-imgui)
 
     if(APPLE)
       target_link_libraries(libera_link_gui PRIVATE ${APPKIT_FRAMEWORK})

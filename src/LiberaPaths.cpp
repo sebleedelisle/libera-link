@@ -1,6 +1,7 @@
 #include "LiberaPaths.hpp"
 
 #include "libera/System.hpp"
+#include "libera/plugin/PluginManagement.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -64,23 +65,12 @@ const std::string& settingsDirectory() {
 }
 
 const std::string& userPluginDirectory() {
-    static const std::string path = [] {
-        const auto dir = std::filesystem::path(settingsDirectory()) / "plugins";
-        std::error_code ec;
-        std::filesystem::create_directories(dir, ec);
-        return dir.string();
-    }();
-    return path;
+    return libera::plugin::userPluginDirectory();
 }
 
 void configureLiberaPluginDirectories() {
-    static bool configured = false;
-    if (configured) {
-        return;
-    }
-
-    libera::System::addPluginDirectory(userPluginDirectory());
-    configured = true;
+    // Plugin loading now defaults to Libera's shared user plugin directory.
+    // Keep this function as a no-op for existing Link startup code.
 }
 
 } // namespace libera_link

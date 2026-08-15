@@ -1,11 +1,9 @@
-// LiberaPluginsWindow — ImGui panel for managing Libera plugins.
+// LiberaPluginsWindow — app shell around Libera's reusable ImGui plugin panel.
 
 #pragma once
 
-#include <string>
-
 namespace libera::ui {
 
-void DrawPluginsWindow(bool* open, const std::string& userPluginDir);
+void DrawPluginsWindow(bool* open);
 
 } // namespace libera::ui
