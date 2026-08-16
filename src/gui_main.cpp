@@ -927,6 +927,8 @@ int main() {
                                     endpoint->stats.observedInputPointRate);
                         ImGui::Text("Received: %llu points",
                                     static_cast<unsigned long long>(endpoint->stats.receivedPoints));
+                        ImGui::Text("Lit: %llu points",
+                                    static_cast<unsigned long long>(endpoint->stats.receivedLitPoints));
                     }
                     ImGui::EndTooltip();
                 };
@@ -968,6 +970,12 @@ int main() {
                         }
                         ImGui::Text("Input: %u pps", endpoint->stats.observedInputPointRate);
                         ImGui::Text("Output: %u pps", endpoint->stats.outputPointRate);
+                        ImGui::Text("Received: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.receivedPoints));
+                        ImGui::Text("Lit received: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.receivedLitPoints));
+                        ImGui::Text("Emitted: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.emittedPoints));
                         ImGui::Text("Latency: %ums", endpoint->stats.latencyMs);
                         ImGui::Text("Buffered: %zu / %zu",
                                     endpoint->stats.totalBufferedPoints,

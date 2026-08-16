@@ -15,11 +15,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <exception>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -40,6 +45,201 @@ namespace {
 using libera::core::LaserPoint;
 using libera::core::PointFillRequest;
 using namespace std::chrono_literals;
+
+std::optional<std::string> readEnvVar(const char* name) {
+#if defined(_MSC_VER)
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+        return std::nullopt;
+    }
+    std::string result(value);
+    std::free(value);
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return result;
+#else
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return std::nullopt;
+    }
+    return std::string(value);
+#endif
+}
+
+bool envFlagEnabled(const char* name) {
+    auto value = readEnvVar(name);
+    if (!value) {
+        return false;
+    }
+
+    std::transform(value->begin(), value->end(), value->begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return *value != "0" && *value != "false" && *value != "off" && *value != "no";
+}
+
+bool ioTraceEnabled() {
+    static const bool enabled = envFlagEnabled("LIBERA_LINK_TRACE_IO");
+    return enabled;
+}
+
+std::string ioTracePath() {
+    static const std::string path = [] {
+        auto configured = readEnvVar("LIBERA_LINK_TRACE_PATH");
+        if (configured) {
+            return *configured;
+        }
+        auto temp = readEnvVar("TEMP");
+        if (!temp) {
+            temp = readEnvVar("TMP");
+        }
+        if (!temp) {
+            return std::string("libera-link-io.log");
+        }
+        std::string tracePath(*temp);
+        if (!tracePath.empty() && tracePath.back() != '\\' && tracePath.back() != '/') {
+            tracePath.push_back('\\');
+        }
+        tracePath += "libera-link-io.log";
+        return tracePath;
+    }();
+    return path;
+}
+
+std::mutex& ioTraceMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+void writeIoTraceLine(const std::string& line) {
+    if (!ioTraceEnabled()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ioTraceMutex());
+    std::ofstream out(ioTracePath(), std::ios::app);
+    if (out) {
+        out << line << '\n';
+    }
+}
+
+std::uint64_t hashLaserPoints(const std::vector<LaserPoint>& points) {
+    std::uint64_t hash = 1469598103934665603ull;
+    auto mixFloat = [&](float value) {
+        std::uint32_t bits = 0;
+        static_assert(sizeof(bits) == sizeof(value));
+        std::memcpy(&bits, &value, sizeof(bits));
+        for (int byte = 0; byte < 4; ++byte) {
+            hash ^= static_cast<std::uint64_t>((bits >> (byte * 8)) & 0xFFu);
+            hash *= 1099511628211ull;
+        }
+    };
+
+    for (const auto& point : points) {
+        mixFloat(point.x);
+        mixFloat(point.y);
+        mixFloat(point.r);
+        mixFloat(point.g);
+        mixFloat(point.b);
+        mixFloat(point.i);
+        mixFloat(point.u1);
+        mixFloat(point.u2);
+    }
+    return hash;
+}
+
+bool isLitPoint(const LaserPoint& point) {
+    return point.i > 0.0f && (point.r > 0.0f || point.g > 0.0f || point.b > 0.0f);
+}
+
+bool isBlankForBoundary(const LaserPoint& point) {
+    return (point.r + point.g + point.b) < 0.01f;
+}
+
+std::size_t countLitPoints(const std::vector<LaserPoint>& points) {
+    return static_cast<std::size_t>(std::count_if(points.begin(), points.end(), isLitPoint));
+}
+
+void appendPointSummary(std::ostringstream& oss, const char* label, const LaserPoint& point) {
+    oss << ' ' << label << "=("
+        << point.x << ','
+        << point.y << ','
+        << point.r << ','
+        << point.g << ','
+        << point.b << ','
+        << point.i << ')';
+}
+
+void appendVectorSummary(std::ostringstream& oss, const std::vector<LaserPoint>& points) {
+    if (points.empty()) {
+        return;
+    }
+    appendPointSummary(oss, "first", points.front());
+    appendPointSummary(oss, "mid", points[points.size() / 2]);
+    appendPointSummary(oss, "last", points.back());
+}
+
+void tracePointVector(std::string_view label,
+                      std::string_view targetLabel,
+                      const std::vector<LaserPoint>& points,
+                      std::string_view extra = {}) {
+    if (!ioTraceEnabled()) {
+        return;
+    }
+
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::size_t lit = countLitPoints(points);
+    std::size_t nonCenter = 0;
+    std::size_t rgbNonzero = 0;
+    std::size_t intensityNonzero = 0;
+    float minX = 0.0f;
+    float maxX = 0.0f;
+    float minY = 0.0f;
+    float maxY = 0.0f;
+
+    if (!points.empty()) {
+        minX = maxX = points.front().x;
+        minY = maxY = points.front().y;
+        for (const auto& point : points) {
+            minX = std::min(minX, point.x);
+            maxX = std::max(maxX, point.x);
+            minY = std::min(minY, point.y);
+            maxY = std::max(maxY, point.y);
+            if (std::abs(point.x) > 0.001f || std::abs(point.y) > 0.001f) {
+                ++nonCenter;
+            }
+            if (point.r > 0.0f || point.g > 0.0f || point.b > 0.0f) {
+                ++rgbNonzero;
+            }
+            if (point.i > 0.0f) {
+                ++intensityNonzero;
+            }
+        }
+    }
+
+    std::ostringstream oss;
+    oss << "ms=" << nowMs
+        << " phase=" << label
+        << " target=\"" << targetLabel << "\""
+        << " count=" << points.size()
+        << " lit=" << lit
+        << " blank=" << (points.size() - lit)
+        << " rgb_nonzero=" << rgbNonzero
+        << " i_nonzero=" << intensityNonzero
+        << " noncenter=" << nonCenter
+        << " x_range=[" << minX << ',' << maxX << ']'
+        << " y_range=[" << minY << ',' << maxY << ']'
+        << " hash=0x" << std::hex << std::setw(16) << std::setfill('0')
+        << hashLaserPoints(points)
+        << std::dec << std::setfill(' ');
+    if (!extra.empty()) {
+        oss << ' ' << extra;
+    }
+    appendVectorSummary(oss, points);
+    writeIoTraceLine(oss.str());
+}
 
 class RuntimeLogger {
 public:
@@ -263,17 +463,24 @@ public:
             return makeSubmissionResult(false, 0, 0);
         }
 
+        frameReplacementMode_.store(false, std::memory_order_relaxed);
         receivedSlices_.fetch_add(1, std::memory_order_relaxed);
         receivedPoints_.fetch_add(pointCount, std::memory_order_relaxed);
+        maybeUpdatePointRate(submission.effectivePointRate.value_or(
+            inferCommandedPointRate(pointCount, static_cast<double>(submission.durationUs))));
         const auto downstreamBuffer = downstreamBufferSnapshot();
+        // Drop only against Link's local pending queue. The downstream frame
+        // transport estimate is already used for request pacing; counting it
+        // here discards live stream points and shifts frame phase.
+        const std::size_t downstreamPointsForDrop = 0;
+        const std::size_t livePointLimit = liveContinuousPointLimit();
         const std::size_t litCount = std::count_if(
             submission.points.begin(), submission.points.end(),
-            [](const LaserPoint& p) {
-                return p.i > 0.0f && (p.r > 0.0f || p.g > 0.0f || p.b > 0.0f);
-            });
+            isLitPoint);
         receivedLitPoints_.fetch_add(litCount, std::memory_order_relaxed);
 
         std::size_t dropCount = 0;
+        std::size_t queuedAfter = 0;
         {
             std::lock_guard<std::mutex> lock(queueMutex_);
             hasSeenInput_ = true;
@@ -281,18 +488,52 @@ public:
             for (auto& point : submission.points) {
                 pendingPoints_.push_back(point);
             }
-            while (!pendingPoints_.empty() &&
-                   (pendingPoints_.size() + downstreamBuffer.pointsInBuffer) > maxQueuedPoints_) {
-                pendingPoints_.pop_front();
-                ++dropCount;
+            if ((pendingPoints_.size() + downstreamPointsForDrop) > livePointLimit) {
+                std::size_t desiredDrop =
+                    (pendingPoints_.size() + downstreamPointsForDrop) - livePointLimit;
+                const std::size_t searchStart =
+                    std::min<std::size_t>(std::max<std::size_t>(desiredDrop, 1),
+                                          pendingPoints_.size());
+                for (std::size_t i = searchStart; i < pendingPoints_.size(); ++i) {
+                    if (isBlankForBoundary(pendingPoints_[i]) ||
+                        !isBlankForBoundary(pendingPoints_[i - 1])) {
+                        continue;
+                    }
+
+                    std::size_t blankRun = 0;
+                    std::size_t j = i;
+                    while (j > 0 && isBlankForBoundary(pendingPoints_[j - 1])) {
+                        --j;
+                        ++blankRun;
+                    }
+                    if (blankRun >= 2) {
+                        desiredDrop = i;
+                        break;
+                    }
+                }
+                while (!pendingPoints_.empty() && dropCount < desiredDrop) {
+                    pendingPoints_.pop_front();
+                    ++dropCount;
+                }
             }
             if (dropCount > 0) {
                 droppedPoints_.fetch_add(dropCount, std::memory_order_relaxed);
             }
+            queuedAfter = pendingPoints_.size();
         }
 
-        maybeUpdatePointRate(submission.effectivePointRate.value_or(
-            inferCommandedPointRate(pointCount, static_cast<double>(submission.durationUs))));
+        if (ioTraceEnabled()) {
+            std::ostringstream extra;
+            extra << "duration_us=" << submission.durationUs
+                  << " effective_pps=" << submission.effectivePointRate.value_or(0)
+                  << " downstream=" << downstreamBuffer.pointsInBuffer
+                  << " drop_downstream=" << downstreamPointsForDrop
+                  << " live_limit=" << livePointLimit
+                  << " queued_after=" << queuedAfter
+                  << " dropped=" << dropCount;
+            tracePointVector("submit_continuous", info_.label, submission.points, extra.str());
+        }
+
         return makeSubmissionResult(true, pointCount, dropCount);
     }
 
@@ -306,6 +547,7 @@ public:
         std::size_t totalLitCount = 0;
         std::size_t validSliceCount = 0;
         std::uint64_t totalDurationUs = 0;
+        std::vector<LaserPoint> tracePoints;
 
         for (const auto& slice : submission.slices) {
             if (slice.points.empty()) {
@@ -322,6 +564,9 @@ public:
                     ++totalLitCount;
                 }
                 replacementPoints.push_back(point);
+                if (ioTraceEnabled()) {
+                    tracePoints.push_back(point);
+                }
             }
         }
 
@@ -329,12 +574,23 @@ public:
             return makeSubmissionResult(false, 0, 0);
         }
 
+        const std::size_t livePointLimit = liveReplacementPointLimit();
+        if (replacementPoints.size() > livePointLimit) {
+            replacementPoints.resize(livePointLimit);
+            if (tracePoints.size() > livePointLimit) {
+                tracePoints.resize(livePointLimit);
+            }
+        }
+
+        frameReplacementMode_.store(true, std::memory_order_relaxed);
+        buffering_.store(false, std::memory_order_relaxed);
         receivedSlices_.fetch_add(validSliceCount, std::memory_order_relaxed);
         receivedPoints_.fetch_add(totalPointCount, std::memory_order_relaxed);
         receivedLitPoints_.fetch_add(totalLitCount, std::memory_order_relaxed);
 
         const auto downstreamBuffer = downstreamBufferSnapshot();
         std::size_t dropCount = 0;
+        std::size_t queuedAfter = 0;
         {
             std::lock_guard<std::mutex> lock(queueMutex_);
             hasSeenInput_ = true;
@@ -349,6 +605,19 @@ public:
             if (dropCount > 0) {
                 droppedPoints_.fetch_add(dropCount, std::memory_order_relaxed);
             }
+            queuedAfter = pendingPoints_.size();
+        }
+
+        if (ioTraceEnabled()) {
+            std::ostringstream extra;
+            extra << "slices=" << validSliceCount
+                  << " duration_us=" << totalDurationUs
+                  << " downstream=" << downstreamBuffer.pointsInBuffer
+                  << " live_limit=" << livePointLimit
+                  << " queued_after=" << queuedAfter
+                  << " dropped=" << dropCount
+                  << " clear_prefetch=" << (submission.clearTransportPrefetch ? 1 : 0);
+            tracePointVector("replace_frame", info_.label, tracePoints, extra.str());
         }
 
         maybeUpdatePointRate(
@@ -372,6 +641,7 @@ public:
             lastInputAt_ = {};
         }
         buffering_.store(true, std::memory_order_relaxed);
+        frameReplacementMode_.store(false, std::memory_order_relaxed);
         commandedInputPps_.store(
             currentPointRate_.load(std::memory_order_relaxed),
             std::memory_order_relaxed);
@@ -589,6 +859,31 @@ private:
             maxPoints);
     }
 
+    std::size_t liveContinuousPointLimit() const {
+        return livePointLimit(2, 0.10);
+    }
+
+    std::size_t liveReplacementPointLimit() const {
+        return livePointLimit(1, 0.05);
+    }
+
+    std::size_t livePointLimit(std::size_t targetMultiplier, double minimumSeconds) const {
+        targetMultiplier = std::max<std::size_t>(targetMultiplier, 1);
+        const std::size_t targetPoints = targetBufferedPoints();
+        const auto pointRate = currentPointRate_.load(std::memory_order_relaxed);
+        const std::size_t minimumPoints =
+            pointRate > 0
+                ? static_cast<std::size_t>(
+                      std::llround(static_cast<double>(pointRate) * minimumSeconds))
+                : 3000;
+        const std::size_t targetWindow =
+            targetPoints > (maxQueuedPoints_ / targetMultiplier)
+                ? maxQueuedPoints_
+                : targetPoints * targetMultiplier;
+        const std::size_t livePoints = std::max(targetWindow, minimumPoints);
+        return std::clamp<std::size_t>(livePoints, 1000, maxQueuedPoints_);
+    }
+
     DownstreamBufferSnapshot downstreamBufferSnapshot(bool allowControllerQuery = true) const {
         DownstreamBufferSnapshot snapshot;
         if (!allowControllerQuery) {
@@ -647,7 +942,10 @@ private:
         const std::size_t targetPoints = targetBufferedPoints();
         const std::size_t totalBufferedAtStart =
             availableAtStart + downstreamBuffer.pointsInBuffer;
-        if (buffering_.load(std::memory_order_relaxed) &&
+        const bool frameReplacementMode =
+            frameReplacementMode_.load(std::memory_order_relaxed);
+        if (!frameReplacementMode &&
+            buffering_.load(std::memory_order_relaxed) &&
             totalBufferedAtStart < targetPoints) {
             const std::size_t missing = req.minimumPointsRequired;
             callbackUnderrunEvents_.fetch_add(1, std::memory_order_relaxed);
@@ -660,6 +958,17 @@ private:
                              true);
             appendFallbackPoints(out, missing);
             blankFillPoints_.fetch_add(missing, std::memory_order_relaxed);
+            if (ioTraceEnabled()) {
+                std::ostringstream extra;
+                extra << "need_min=" << req.minimumPointsRequired
+                      << " need_max=" << req.maximumPointsRequired
+                      << " available=" << availableAtStart
+                      << " downstream=" << downstreamBuffer.pointsInBuffer
+                      << " target=" << targetPoints
+                      << " queue_after=" << pendingPoints_.size()
+                      << " missing=" << missing;
+                tracePointVector("fill_buffering_blank", info_.label, out, extra.str());
+            }
             return;
         }
         buffering_.store(false, std::memory_order_relaxed);
@@ -680,7 +989,9 @@ private:
             const std::size_t blankCount = req.minimumPointsRequired - out.size();
             callbackUnderrunEvents_.fetch_add(1, std::memory_order_relaxed);
             callbackUnderrunPoints_.fetch_add(blankCount, std::memory_order_relaxed);
-            maybeIncreaseLatencyOnUnderrun(blankCount, req.minimumPointsRequired, targetPoints);
+            if (!frameReplacementMode) {
+                maybeIncreaseLatencyOnUnderrun(blankCount, req.minimumPointsRequired, targetPoints);
+            }
             logUnderrunIfDue(req,
                              availableAtStart,
                              downstreamBuffer.pointsInBuffer,
@@ -689,7 +1000,24 @@ private:
                              false);
             appendFallbackPoints(out, blankCount);
             blankFillPoints_.fetch_add(blankCount, std::memory_order_relaxed);
-            buffering_.store(true, std::memory_order_relaxed);
+            buffering_.store(!frameReplacementMode, std::memory_order_relaxed);
+        }
+
+        if (ioTraceEnabled()) {
+            std::ostringstream extra;
+            extra << "need_min=" << req.minimumPointsRequired
+                  << " need_max=" << req.maximumPointsRequired
+                  << " available=" << availableAtStart
+                  << " downstream=" << downstreamBuffer.pointsInBuffer
+                  << " target=" << targetPoints
+                  << " wrote=" << toWrite
+                  << " queue_after=" << pendingPoints_.size()
+                  << " frame_replacement=" << (frameReplacementMode ? 1 : 0)
+                  << " buffering=" << (buffering_.load(std::memory_order_relaxed) ? 1 : 0);
+            tracePointVector(out.size() == toWrite ? "fill" : "fill_underrun",
+                             info_.label,
+                             out,
+                             extra.str());
         }
     }
 
@@ -827,6 +1155,7 @@ private:
     LaserPoint lastOutputPoint_{};
     bool haveLastOutputPoint_ = false;
     bool hasSeenInput_ = false;
+    std::atomic<bool> frameReplacementMode_{false};
     std::chrono::steady_clock::time_point lastInputAt_{};
     std::atomic<bool> buffering_{true};
     std::chrono::steady_clock::time_point lastUnderrunLog_{};
@@ -1274,6 +1603,16 @@ bool LinkRuntime::start(const LinkOptions& options,
     }
 
     impl_->logger->clear();
+    if (ioTraceEnabled()) {
+        {
+            std::lock_guard<std::mutex> lock(ioTraceMutex());
+            std::ofstream out(ioTracePath(), std::ios::trunc);
+            if (out) {
+                out << "# Libera Link IO trace\n";
+            }
+        }
+        impl_->logger->info("Link IO trace enabled at " + ioTracePath());
+    }
     impl_->stopRequested.store(false, std::memory_order_relaxed);
 
     const auto fallbackVirtualControllerHostInfo = [&]() -> std::optional<virtual_controller::VirtualControllerHostInfo> {
