@@ -134,6 +134,10 @@ add_executable(test_libera_protocol_virtual_controller_host
     tests/test_libera_protocol_virtual_controller_host.cpp)
 target_link_libraries(test_libera_protocol_virtual_controller_host PRIVATE libera_link_core)
 
+add_executable(libera_protocol_sender_smoke
+    tests/libera_protocol_sender_smoke.cpp)
+target_link_libraries(libera_protocol_sender_smoke PRIVATE libera-core)
+
 if(LIBERA_LINK_BUILD_HARDWARE_TESTS)
   add_executable(test_helios_usb_stream
       extern/libera-laser/tests/test_helios_usb_stream.cpp)
