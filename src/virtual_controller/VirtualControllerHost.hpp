@@ -69,6 +69,7 @@ public:
     virtual SubmissionResult submitContinuous(SliceSubmission submission) = 0;
     virtual SubmissionResult replaceFrame(FrameSubmission submission) = 0;
     virtual SubmissionResult submitFrame(FrameSubmission submission) = 0;
+    virtual void setScannerSync(std::int64_t offsetNs, bool enabled) = 0;
     virtual TargetStatus status() const = 0;
     virtual void reset() = 0;
 };

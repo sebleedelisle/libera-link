@@ -47,6 +47,8 @@ using libera::core::LaserPoint;
 using libera::core::PointFillRequest;
 using namespace std::chrono_literals;
 
+constexpr double scannerSyncUnitNanoseconds = 100000.0;
+
 std::optional<std::string> readEnvVar(const char* name) {
 #if defined(_MSC_VER)
     char* value = nullptr;
@@ -704,6 +706,17 @@ public:
         }
 
         return makeSubmissionResult(accepted, totalPointCount, dropped);
+    }
+
+    void setScannerSync(std::int64_t offsetNs, bool enabled) override {
+        if (!controller_) {
+            return;
+        }
+
+        const double clampedOffsetNs =
+            static_cast<double>(std::max<std::int64_t>(offsetNs, 0));
+        controller_->setScannerSync(clampedOffsetNs / scannerSyncUnitNanoseconds);
+        controller_->setScannerSyncEnabled(enabled);
     }
 
     virtual_controller::TargetStatus status() const override {

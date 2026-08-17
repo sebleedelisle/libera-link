@@ -76,6 +76,8 @@ public:
         return replaceFrame(std::move(submission));
     }
 
+    void setScannerSync(std::int64_t, bool) override {}
+
     libera_link::virtual_controller::TargetStatus status() const override {
         std::lock_guard<std::mutex> lock(mutex_);
         libera_link::virtual_controller::TargetStatus status;

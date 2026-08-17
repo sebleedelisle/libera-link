@@ -25,7 +25,8 @@ implement Libera's output scheduler. `LinkRuntime` already does that.
 The current API lives in [VirtualControllerHost.hpp](../src/virtual_controller/VirtualControllerHost.hpp).
 
 - `VirtualControllerHost`: lifecycle object for one software-facing controller family.
-- `TargetSink`: a linked output target that accepts points or frames.
+- `TargetSink`: a linked output target that accepts points, frames, and
+  transport-side control values such as scanner sync.
 - `SliceSubmission`: one timed batch of normalized laser points.
 - `FrameSubmission`: a whole frame expressed as one or more slices.
 - `SubmissionResult`: accepted/dropped point counts and current target status after a submission.

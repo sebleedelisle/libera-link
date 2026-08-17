@@ -40,6 +40,10 @@ constexpr std::uint32_t defaultMinPointRate = 1000;
 constexpr std::uint32_t defaultMaxFramePoints = 300000;
 constexpr std::uint32_t defaultMaxRecordPayloadBytes = 4u * 1024u * 1024u;
 constexpr std::uint8_t maxLaserPointUserChannels = 2;
+constexpr std::uint32_t supportedFeatureFlags =
+    protocol::FeatureTargetBeginTime |
+    protocol::FeatureScannerSync |
+    protocol::FeatureStatus;
 
 std::string trim(std::string_view text) {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
@@ -224,13 +228,18 @@ std::string targetEndpointId(const TargetInfo& info, std::size_t index) {
 }
 
 std::string targetDisplayName(const TargetInfo& info, std::size_t index) {
+    std::string name;
     if (!info.label.empty()) {
-        return info.label;
+        name = info.label;
+    } else if (!info.id.empty()) {
+        name = info.id;
+    } else {
+        name = "Libera target " + std::to_string(index + 1);
     }
-    if (!info.id.empty()) {
-        return info.id;
+    if (name.rfind("LL - ", 0) == 0) {
+        return name;
     }
-    return "Libera target " + std::to_string(index + 1);
+    return "LL - " + name;
 }
 
 protocol::StreamMode acceptedMode(protocol::StreamMode requested) {
@@ -379,9 +388,7 @@ public:
             ? std::min<std::uint32_t>(info.maxPointRate, options_.maxPointRate)
             : options_.maxPointRate;
         advertisement.maxFramePointCount = options_.maxFramePoints;
-        advertisement.featureFlags =
-            protocol::FeatureTargetBeginTime |
-            protocol::FeatureStatus;
+        advertisement.featureFlags = supportedFeatureFlags;
         return advertisement;
     }
 
@@ -498,7 +505,7 @@ private:
         accept.sessionId = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 state.sessionStartedAt.time_since_epoch()).count());
-        accept.featureFlags = protocol::FeatureTargetBeginTime | protocol::FeatureStatus;
+        accept.featureFlags = supportedFeatureFlags;
         if (!writeBytes(*socket, state.sender.makeAccept(accept))) {
             target_.sink->reset();
             return;
@@ -528,6 +535,8 @@ private:
         switch (record.type) {
         case protocol::RecordType::StreamConfig:
             return handleStreamConfig(state, record, error);
+        case protocol::RecordType::SetScannerSync:
+            return handleScannerSync(record, error);
         case protocol::RecordType::FrameMarker:
             return handleFrameMarker(state, record, error);
         case protocol::RecordType::Points:
@@ -568,6 +577,21 @@ private:
                 options_.maxPointRate);
         }
         state.pendingFrame.reset();
+        return true;
+    }
+
+    bool handleScannerSync(const protocol::Record& record,
+                           std::string& error) const {
+        protocol::ScannerSync scannerSync;
+        if (!protocol::decodeScannerSync(record.payload.data(),
+                                         record.payload.size(),
+                                         scannerSync,
+                                         error)) {
+            return false;
+        }
+        if (target_.sink) {
+            target_.sink->setScannerSync(scannerSync.offsetNs, scannerSync.enabled);
+        }
         return true;
     }
 

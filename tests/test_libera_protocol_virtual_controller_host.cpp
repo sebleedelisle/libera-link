@@ -74,6 +74,14 @@ public:
         return result(true, count, 0);
     }
 
+    void setScannerSync(std::int64_t offsetNs, bool enabled) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lastScannerSyncOffsetNs_ = offsetNs;
+        lastScannerSyncEnabled_ = enabled;
+        ++scannerSyncUpdates_;
+        cv_.notify_all();
+    }
+
     vc::TargetStatus status() const override {
         std::lock_guard<std::mutex> lock(mutex_);
         vc::TargetStatus status;
@@ -90,6 +98,13 @@ public:
         });
     }
 
+    bool waitForScannerSync(std::size_t count, std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout, [&] {
+            return scannerSyncUpdates_ >= count;
+        });
+    }
+
     std::size_t frames() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return frames_;
@@ -103,6 +118,16 @@ public:
     std::vector<libera::core::LaserPoint> lastFrame() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return lastFrame_;
+    }
+
+    std::int64_t lastScannerSyncOffsetNs() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastScannerSyncOffsetNs_;
+    }
+
+    bool lastScannerSyncEnabled() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastScannerSyncEnabled_;
     }
 
 private:
@@ -123,6 +148,9 @@ private:
     mutable std::condition_variable cv_;
     std::size_t frames_ = 0;
     std::size_t continuousPoints_ = 0;
+    std::size_t scannerSyncUpdates_ = 0;
+    std::int64_t lastScannerSyncOffsetNs_ = 0;
+    bool lastScannerSyncEnabled_ = false;
     std::vector<libera::core::LaserPoint> lastFrame_;
 };
 
@@ -184,6 +212,7 @@ int main() {
     ASSERT_TRUE(host.start(context, error), error.c_str());
     const auto endpoints = host.endpoints();
     ASSERT_EQ(endpoints.size(), 1, "one endpoint");
+    ASSERT_TRUE(endpoints[0].label == "LL - Protocol test target", "endpoint label is prefixed");
 
     asio::io_context io;
     tcp::socket socket(io);
@@ -207,6 +236,8 @@ int main() {
                 "decode ACCEPT");
     ASSERT_TRUE(accept.acceptedStreamMode == protocol::StreamMode::FrameByCount,
                 "accepted frame-by-count");
+    ASSERT_TRUE((accept.featureFlags & protocol::FeatureScannerSync) != 0,
+                "ACCEPT advertises scanner sync");
     sender.setUserChannelCount(accept.acceptedUserChannelCount);
     ASSERT_TRUE(writeBytes(socket, sender.makeReady()), "send READY");
 
@@ -215,6 +246,14 @@ int main() {
     streamConfig.streamMode = protocol::StreamMode::FrameByCount;
     streamConfig.userChannelCount = accept.acceptedUserChannelCount;
     ASSERT_TRUE(writeBytes(socket, sender.makeStreamConfig(streamConfig)), "send stream config");
+
+    protocol::ScannerSync scannerSync;
+    scannerSync.offsetNs = 225000;
+    scannerSync.enabled = true;
+    ASSERT_TRUE(writeBytes(socket, sender.makeScannerSync(scannerSync)), "send scanner sync");
+    ASSERT_TRUE(sink->waitForScannerSync(1, 1000ms), "scanner sync applied");
+    ASSERT_EQ(sink->lastScannerSyncOffsetNs(), 225000, "scanner sync offset");
+    ASSERT_TRUE(sink->lastScannerSyncEnabled(), "scanner sync enabled");
 
     protocol::FrameMarker marker;
     marker.frameId = 1;
