@@ -1,6 +1,7 @@
 #include "LinkRuntime.hpp"
 #include "LiberaPaths.hpp"
 #include "virtual_controller/IdnVirtualControllerHost.hpp"
+#include "virtual_controller/LiberaProtocolVirtualControllerHost.hpp"
 #include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
 #include "libera/System.hpp"
@@ -320,6 +321,7 @@ std::string trimLogLine(std::string_view line) {
 
 void printUsageImpl(const char* exe, std::ostream& out) {
     virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
+    virtual_controller::ensureBuiltInLiberaProtocolVirtualControllerHostLinked();
     const auto defaultVirtualControllerHost = virtual_controller::defaultVirtualControllerHost();
     const auto availableVirtualControllerHosts = virtual_controller::availableVirtualControllerHosts();
     out << "Usage: " << exe << " [options]\n"
@@ -441,10 +443,7 @@ public:
 
         controller_->setPointRate(startingRate);
         controller_->setArmed(true);
-        controller_->setRequestPointsCallback(
-            [this](const PointFillRequest& req, std::vector<LaserPoint>& out) {
-                fillFromQueue(req, out);
-            });
+        installPointCallback();
     }
 
     ~LiberaTarget() override {
@@ -463,6 +462,7 @@ public:
             return makeSubmissionResult(false, 0, 0);
         }
 
+        installPointCallback();
         frameReplacementMode_.store(false, std::memory_order_relaxed);
         receivedSlices_.fetch_add(1, std::memory_order_relaxed);
         receivedPoints_.fetch_add(pointCount, std::memory_order_relaxed);
@@ -542,6 +542,7 @@ public:
             return makeSubmissionResult(false, 0, 0);
         }
 
+        installPointCallback();
         std::deque<LaserPoint> replacementPoints;
         std::size_t totalPointCount = 0;
         std::size_t totalLitCount = 0;
@@ -628,6 +629,83 @@ public:
         return makeSubmissionResult(true, totalPointCount, dropCount);
     }
 
+    virtual_controller::SubmissionResult submitFrame(virtual_controller::FrameSubmission submission) override {
+        if (submission.slices.empty()) {
+            return makeSubmissionResult(false, 0, 0);
+        }
+
+        libera::core::Frame frame;
+        std::size_t totalPointCount = 0;
+        std::size_t totalLitCount = 0;
+        std::size_t validSliceCount = 0;
+        std::uint64_t totalDurationUs = 0;
+        std::vector<LaserPoint> tracePoints;
+
+        for (const auto& slice : submission.slices) {
+            if (slice.points.empty()) {
+                continue;
+            }
+
+            ++validSliceCount;
+            totalPointCount += slice.points.size();
+            totalDurationUs += slice.durationUs;
+            frame.points.insert(frame.points.end(), slice.points.begin(), slice.points.end());
+
+            for (const auto& point : slice.points) {
+                if (isLitPoint(point)) {
+                    ++totalLitCount;
+                }
+                if (ioTraceEnabled()) {
+                    tracePoints.push_back(point);
+                }
+            }
+        }
+
+        if (frame.points.empty()) {
+            return makeSubmissionResult(false, 0, 0);
+        }
+
+        frameReplacementMode_.store(false, std::memory_order_relaxed);
+        buffering_.store(false, std::memory_order_relaxed);
+        receivedSlices_.fetch_add(validSliceCount, std::memory_order_relaxed);
+        receivedPoints_.fetch_add(totalPointCount, std::memory_order_relaxed);
+        receivedLitPoints_.fetch_add(totalLitCount, std::memory_order_relaxed);
+
+        const unsigned frameRate = submission.effectivePointRate.value_or(
+            inferCommandedPointRate(totalPointCount, static_cast<double>(totalDurationUs)));
+        maybeUpdatePointRate(frameRate);
+
+        if (submission.targetBeginTime) {
+            frame.time = *submission.targetBeginTime;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            pendingPoints_.clear();
+            hasSeenInput_ = true;
+            lastInputAt_ = std::chrono::steady_clock::now();
+        }
+
+        const bool accepted = controller_ && controller_->sendFrame(std::move(frame));
+        const std::size_t dropped = accepted ? 0 : totalPointCount;
+        if (!accepted) {
+            droppedPoints_.fetch_add(dropped, std::memory_order_relaxed);
+        }
+
+        if (ioTraceEnabled()) {
+            std::ostringstream extra;
+            extra << "slices=" << validSliceCount
+                  << " duration_us=" << totalDurationUs
+                  << " effective_pps=" << frameRate
+                  << " accepted=" << (accepted ? 1 : 0)
+                  << " queued_frames=" << (controller_ ? controller_->queuedFrameCount() : 0)
+                  << " target_time=" << (submission.targetBeginTime ? 1 : 0);
+            tracePointVector("submit_frame", info_.label, tracePoints, extra.str());
+        }
+
+        return makeSubmissionResult(accepted, totalPointCount, dropped);
+    }
+
     virtual_controller::TargetStatus status() const override {
         return targetStatusSnapshot();
     }
@@ -650,7 +728,9 @@ public:
         lastObservedDownstreamTransportBufferedPoints_.store(0, std::memory_order_relaxed);
         lastObservedDownstreamBufferValid_.store(false, std::memory_order_relaxed);
         if (controller_) {
+            controller_->clearFrameQueue();
             controller_->clearPointCallbackPrefetch();
+            installPointCallback();
         }
     }
 
@@ -831,6 +911,16 @@ private:
         std::size_t transportBufferedPoints = 0;
         bool valid = false;
     };
+
+    void installPointCallback() {
+        if (!controller_) {
+            return;
+        }
+        controller_->setRequestPointsCallback(
+            [this](const PointFillRequest& req, std::vector<LaserPoint>& out) {
+                fillFromQueue(req, out);
+            });
+    }
 
     static unsigned inferCommandedPointRate(std::size_t pointCount,
                                             double durationUs) {
@@ -1379,6 +1469,7 @@ void printUsage(const char* exe) {
 ParseResult parseOptions(int argc, char** argv, LinkOptions& options) {
     configureLiberaPluginDirectories();
     virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
+    virtual_controller::ensureBuiltInLiberaProtocolVirtualControllerHostLinked();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help") {
@@ -1492,6 +1583,7 @@ LinkRuntime::LinkRuntime()
     : impl_(std::make_unique<Impl>()) {
     configureLiberaPluginDirectories();
     virtual_controller::ensureBuiltInIdnVirtualControllerHostLinked();
+    virtual_controller::ensureBuiltInLiberaProtocolVirtualControllerHostLinked();
 
     std::weak_ptr<RuntimeLogger> weakLogger = impl_->logger;
     libera::setLogHandlers(

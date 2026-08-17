@@ -2,6 +2,7 @@
 
 #include "libera/core/LaserPoint.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,6 +23,8 @@ struct SliceSubmission {
 
 struct FrameSubmission {
     std::vector<SliceSubmission> slices;
+    std::optional<std::uint32_t> effectivePointRate;
+    std::optional<std::chrono::steady_clock::time_point> targetBeginTime;
     bool clearTransportPrefetch = false;
 };
 
@@ -65,6 +68,7 @@ public:
     virtual const TargetInfo& targetInfo() const = 0;
     virtual SubmissionResult submitContinuous(SliceSubmission submission) = 0;
     virtual SubmissionResult replaceFrame(FrameSubmission submission) = 0;
+    virtual SubmissionResult submitFrame(FrameSubmission submission) = 0;
     virtual TargetStatus status() const = 0;
     virtual void reset() = 0;
 };

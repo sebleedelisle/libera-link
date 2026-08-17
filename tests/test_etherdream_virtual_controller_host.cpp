@@ -71,6 +71,11 @@ public:
         return result(true, count, 0);
     }
 
+    libera_link::virtual_controller::SubmissionResult
+    submitFrame(libera_link::virtual_controller::FrameSubmission submission) override {
+        return replaceFrame(std::move(submission));
+    }
+
     libera_link::virtual_controller::TargetStatus status() const override {
         std::lock_guard<std::mutex> lock(mutex_);
         libera_link::virtual_controller::TargetStatus status;

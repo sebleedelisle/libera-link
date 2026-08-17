@@ -101,6 +101,7 @@ add_library(libera_link_core STATIC
     src/LinkRuntime.cpp
     src/virtual_controller/EtherDreamVirtualControllerHost.cpp
     src/virtual_controller/IdnVirtualControllerHost.cpp
+    src/virtual_controller/LiberaProtocolVirtualControllerHost.cpp
     src/virtual_controller/VirtualControllerHostRegistry.cpp
     src/LiberaPaths.cpp
 )
@@ -128,6 +129,10 @@ target_link_libraries(test_point_stream_framer PRIVATE libera-core)
 add_executable(test_etherdream_virtual_controller_host
     tests/test_etherdream_virtual_controller_host.cpp)
 target_link_libraries(test_etherdream_virtual_controller_host PRIVATE libera_link_core)
+
+add_executable(test_libera_protocol_virtual_controller_host
+    tests/test_libera_protocol_virtual_controller_host.cpp)
+target_link_libraries(test_libera_protocol_virtual_controller_host PRIVATE libera_link_core)
 
 if(LIBERA_LINK_BUILD_HARDWARE_TESTS)
   add_executable(test_helios_usb_stream
