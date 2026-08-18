@@ -213,6 +213,8 @@ int main() {
     const auto endpoints = host.endpoints();
     ASSERT_EQ(endpoints.size(), 1, "one endpoint");
     ASSERT_TRUE(endpoints[0].label == "LL - Protocol test target", "endpoint label is prefixed");
+    ASSERT_TRUE(endpoints[0].attributes.at("availability") == "available",
+                "endpoint starts available");
 
     asio::io_context io;
     tcp::socket socket(io);
@@ -240,6 +242,26 @@ int main() {
                 "ACCEPT advertises scanner sync");
     sender.setUserChannelCount(accept.acceptedUserChannelCount);
     ASSERT_TRUE(writeBytes(socket, sender.makeReady()), "send READY");
+
+    const auto busyEndpoints = host.endpoints();
+    ASSERT_EQ(busyEndpoints.size(), 1, "one busy endpoint");
+    ASSERT_TRUE(busyEndpoints[0].attributes.at("availability") == "busy",
+                "endpoint becomes busy after accepted session");
+
+    tcp::socket secondSocket(io);
+    secondSocket.connect(tcp::endpoint(asio::ip::make_address("127.0.0.1"),
+                                       endpoints[0].port),
+                         ec);
+    ASSERT_TRUE(!ec, "connect second protocol client");
+    protocol::Sender secondSender(2);
+    hello.senderName = "second-protocol-host-test";
+    ASSERT_TRUE(writeBytes(secondSocket, secondSender.makeHello(hello)), "send second HELLO");
+    ASSERT_TRUE(readRecord(secondSocket, record), "read second response");
+    ASSERT_TRUE(record.type == protocol::RecordType::Reject, "second client is rejected");
+    protocol::Reject reject;
+    ASSERT_TRUE(protocol::decodeReject(record.payload.data(), record.payload.size(), reject, error),
+                "decode reject");
+    ASSERT_TRUE(reject.code == protocol::RejectCode::Busy, "busy reject code");
 
     protocol::StreamConfig streamConfig;
     streamConfig.defaultPointRate = 30000;

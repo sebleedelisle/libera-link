@@ -38,7 +38,11 @@ struct TargetStatus {
     std::size_t targetBufferedPoints = 0;
     std::uint32_t outputPointRate = 0;
     std::uint32_t observedInputPointRate = 0;
+    double observedInputFrameRate = 0.0;
+    double observedControllerFrameRate = 0.0;
     std::uint32_t latencyMs = 0;
+    std::uint64_t receivedFrames = 0;
+    std::uint64_t controllerSubmittedFrames = 0;
     std::uint64_t receivedPoints = 0;
     std::uint64_t droppedPoints = 0;
     std::uint64_t underrunEvents = 0;

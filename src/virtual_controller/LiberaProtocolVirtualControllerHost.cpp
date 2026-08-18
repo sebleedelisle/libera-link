@@ -368,6 +368,10 @@ public:
         endpoint.channels = options_.maxUserChannels;
         endpoint.attributes["stream_modes"] = "raw,frame-by-count";
         endpoint.attributes["discovery_port"] = std::to_string(options_.discoveryPort);
+        endpoint.attributes["availability"] =
+            endpointAvailability() == protocol::EndpointAvailability::Available
+                ? "available"
+                : "busy";
         return endpoint;
     }
 
@@ -382,6 +386,7 @@ public:
         advertisement.supportedStreamModes =
             protocol::streamModeMask(protocol::StreamMode::RawPointStream) |
             protocol::streamModeMask(protocol::StreamMode::FrameByCount);
+        advertisement.availability = endpointAvailability();
         advertisement.maxUserChannelCount = options_.maxUserChannels;
         advertisement.minPointRate = options_.minPointRate;
         advertisement.maxPointRate = info.maxPointRate > 0
@@ -393,6 +398,32 @@ public:
     }
 
 private:
+    protocol::EndpointAvailability endpointAvailability() const noexcept {
+        return sessionOwned_.load(std::memory_order_acquire)
+            ? protocol::EndpointAvailability::Busy
+            : protocol::EndpointAvailability::Available;
+    }
+
+    bool tryAcquireSession() noexcept {
+        bool expected = false;
+        return sessionOwned_.compare_exchange_strong(expected,
+                                                     true,
+                                                     std::memory_order_acq_rel,
+                                                     std::memory_order_acquire);
+    }
+
+    void releaseSession() noexcept {
+        sessionOwned_.store(false, std::memory_order_release);
+    }
+
+    void sendReject(tcp::socket& socket, protocol::RejectCode code, std::string message) const {
+        protocol::Reject reject;
+        reject.code = code;
+        reject.message = std::move(message);
+        protocol::Sender rejectSender;
+        writeBytes(socket, rejectSender.makeReject(reject));
+    }
+
     void acceptLoop() {
         while (running_.load(std::memory_order_acquire)) {
             auto socket = std::make_shared<tcp::socket>(io_);
@@ -468,22 +499,27 @@ private:
             return;
         }
 
-        target_.sink->reset();
-
         SessionState state;
         protocol::Record record;
         std::string error;
         if (!readRecord(*socket, record, error) || record.type != protocol::RecordType::Hello) {
-            target_.sink->reset();
             return;
         }
 
         protocol::Hello hello;
         if (!protocol::decodeHello(record.payload.data(), record.payload.size(), hello, error)) {
-            target_.sink->reset();
+            sendReject(*socket, protocol::RejectCode::MalformedHello, error);
             return;
         }
 
+        if (!tryAcquireSession()) {
+            sendReject(*socket,
+                       protocol::RejectCode::Busy,
+                       "Endpoint already has an active session.");
+            return;
+        }
+
+        target_.sink->reset();
         state.streamMode = acceptedMode(hello.requestedStreamMode);
         state.userChannelCount = static_cast<std::uint8_t>(std::min<std::uint32_t>(
             options_.maxUserChannels,
@@ -508,11 +544,13 @@ private:
         accept.featureFlags = supportedFeatureFlags;
         if (!writeBytes(*socket, state.sender.makeAccept(accept))) {
             target_.sink->reset();
+            releaseSession();
             return;
         }
 
         if (!readRecord(*socket, record, error) || record.type != protocol::RecordType::Ready) {
             target_.sink->reset();
+            releaseSession();
             return;
         }
 
@@ -526,6 +564,7 @@ private:
         }
 
         target_.sink->reset();
+        releaseSession();
     }
 
     bool handleRecord(tcp::socket& socket,
@@ -736,6 +775,7 @@ private:
     std::vector<std::shared_ptr<tcp::socket>> activeSockets_;
     std::mutex activeSocketsMutex_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> sessionOwned_{false};
 };
 
 VirtualControllerHostRegistrar gLiberaProtocolVirtualControllerHostRegistrar({

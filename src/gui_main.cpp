@@ -816,6 +816,7 @@ int main() {
                     hostOnline && endpoint &&
                     endpoint->stats.receivedPoints > 0 &&
                     endpoint->stats.observedInputPointRate > 0;
+                const char* controllerIngestLabel = "Controller ingest";
 
                 const ImU32 hostLight = hostOnline
                     ? IM_COL32(65, 234, 130, 255)
@@ -925,6 +926,16 @@ int main() {
                         }
                         ImGui::Text("Input: %u pps",
                                     endpoint->stats.observedInputPointRate);
+                        ImGui::Text("%s: %.1f fps",
+                                    controllerIngestLabel,
+                                    endpoint->stats.observedControllerFrameRate);
+                        ImGui::Text("Input frames: %.1f fps",
+                                    endpoint->stats.observedInputFrameRate);
+                        ImGui::Text("Controller frames: %llu",
+                                    static_cast<unsigned long long>(
+                                        endpoint->stats.controllerSubmittedFrames));
+                        ImGui::Text("Input frames total: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.receivedFrames));
                         ImGui::Text("Received: %llu points",
                                     static_cast<unsigned long long>(endpoint->stats.receivedPoints));
                         ImGui::Text("Lit: %llu points",
@@ -969,7 +980,17 @@ int main() {
                             ImGui::Text("Virtual Controller: %s", endpoint->virtualControllerHostDisplayName.c_str());
                         }
                         ImGui::Text("Input: %u pps", endpoint->stats.observedInputPointRate);
+                        ImGui::Text("%s: %.1f fps",
+                                    controllerIngestLabel,
+                                    endpoint->stats.observedControllerFrameRate);
+                        ImGui::Text("Input frames: %.1f fps",
+                                    endpoint->stats.observedInputFrameRate);
                         ImGui::Text("Output: %u pps", endpoint->stats.outputPointRate);
+                        ImGui::Text("Controller frames: %llu",
+                                    static_cast<unsigned long long>(
+                                        endpoint->stats.controllerSubmittedFrames));
+                        ImGui::Text("Input frames total: %llu",
+                                    static_cast<unsigned long long>(endpoint->stats.receivedFrames));
                         ImGui::Text("Received: %llu",
                                     static_cast<unsigned long long>(endpoint->stats.receivedPoints));
                         ImGui::Text("Lit received: %llu",

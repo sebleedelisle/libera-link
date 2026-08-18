@@ -54,6 +54,8 @@ const char* runtimeStateLabel(RuntimeState state);
 
 struct EndpointStatsSnapshot {
     std::uint64_t receivedSlices = 0;
+    std::uint64_t receivedFrames = 0;
+    std::uint64_t controllerSubmittedFrames = 0;
     std::uint64_t receivedPoints = 0;
     std::uint64_t receivedLitPoints = 0;
     std::uint64_t callbackCalls = 0;
@@ -69,6 +71,8 @@ struct EndpointStatsSnapshot {
     std::size_t totalBufferedPoints = 0;
     std::uint32_t outputPointRate = 0;
     std::uint32_t observedInputPointRate = 0;
+    double observedInputFrameRate = 0.0;
+    double observedControllerFrameRate = 0.0;
     std::uint32_t latencyMs = 0;
     std::size_t targetBufferedPoints = 0;
     bool buffering = false;

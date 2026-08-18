@@ -402,6 +402,8 @@ class LiberaTarget final : public virtual_controller::TargetSink {
 public:
     struct StatsSnapshot {
         std::uint64_t receivedSlices = 0;
+        std::uint64_t receivedFrames = 0;
+        std::uint64_t controllerSubmittedFrames = 0;
         std::uint64_t receivedPoints = 0;
         std::uint64_t receivedLitPoints = 0;
         std::uint64_t callbackCalls = 0;
@@ -417,6 +419,8 @@ public:
         std::size_t totalBufferedPoints = 0;
         std::uint32_t outputPointRate = 0;
         std::uint32_t observedInputPointRate = 0;
+        double observedInputFrameRate = 0.0;
+        double observedControllerFrameRate = 0.0;
         std::uint32_t latencyMs = 0;
         std::size_t targetBufferedPoints = 0;
         bool buffering = false;
@@ -588,6 +592,7 @@ public:
         frameReplacementMode_.store(true, std::memory_order_relaxed);
         buffering_.store(false, std::memory_order_relaxed);
         receivedSlices_.fetch_add(validSliceCount, std::memory_order_relaxed);
+        receivedFrames_.fetch_add(1, std::memory_order_relaxed);
         receivedPoints_.fetch_add(totalPointCount, std::memory_order_relaxed);
         receivedLitPoints_.fetch_add(totalLitCount, std::memory_order_relaxed);
 
@@ -670,6 +675,7 @@ public:
         frameReplacementMode_.store(false, std::memory_order_relaxed);
         buffering_.store(false, std::memory_order_relaxed);
         receivedSlices_.fetch_add(validSliceCount, std::memory_order_relaxed);
+        receivedFrames_.fetch_add(1, std::memory_order_relaxed);
         receivedPoints_.fetch_add(totalPointCount, std::memory_order_relaxed);
         receivedLitPoints_.fetch_add(totalLitCount, std::memory_order_relaxed);
 
@@ -740,6 +746,8 @@ public:
         lastObservedDownstreamPrefetchedPoints_.store(0, std::memory_order_relaxed);
         lastObservedDownstreamTransportBufferedPoints_.store(0, std::memory_order_relaxed);
         lastObservedDownstreamBufferValid_.store(false, std::memory_order_relaxed);
+        observedInputFrameRateMilli_.store(0, std::memory_order_relaxed);
+        observedControllerFrameRateMilli_.store(0, std::memory_order_relaxed);
         if (controller_) {
             controller_->clearFrameQueue();
             controller_->clearPointCallbackPrefetch();
@@ -750,6 +758,11 @@ public:
     StatsSnapshot getStatsSnapshot() const {
         StatsSnapshot snapshot;
         snapshot.receivedSlices = receivedSlices_.load(std::memory_order_relaxed);
+        snapshot.receivedFrames = receivedFrames_.load(std::memory_order_relaxed);
+        if (controller_) {
+            const auto transportMetrics = controller_->frameTransportMetrics();
+            snapshot.controllerSubmittedFrames = transportMetrics.submittedFrames;
+        }
         snapshot.receivedPoints = receivedPoints_.load(std::memory_order_relaxed);
         snapshot.receivedLitPoints = receivedLitPoints_.load(std::memory_order_relaxed);
         snapshot.callbackCalls = callbackCalls_.load(std::memory_order_relaxed);
@@ -760,6 +773,13 @@ public:
         snapshot.droppedPoints = droppedPoints_.load(std::memory_order_relaxed);
         snapshot.outputPointRate = currentPointRate_.load(std::memory_order_relaxed);
         snapshot.observedInputPointRate = commandedInputPps_.load(std::memory_order_relaxed);
+        snapshot.observedInputFrameRate =
+            static_cast<double>(observedInputFrameRateMilli_.load(std::memory_order_relaxed)) /
+            1000.0;
+        snapshot.observedControllerFrameRate =
+            static_cast<double>(
+                observedControllerFrameRateMilli_.load(std::memory_order_relaxed)) /
+            1000.0;
         snapshot.latencyMs = latencyMs_.load(std::memory_order_relaxed);
         snapshot.targetBufferedPoints = targetBufferedPoints();
         snapshot.buffering = buffering_.load(std::memory_order_relaxed);
@@ -788,7 +808,11 @@ public:
         status.targetBufferedPoints = stats.targetBufferedPoints;
         status.outputPointRate = stats.outputPointRate;
         status.observedInputPointRate = stats.observedInputPointRate;
+        status.observedInputFrameRate = stats.observedInputFrameRate;
+        status.observedControllerFrameRate = stats.observedControllerFrameRate;
         status.latencyMs = stats.latencyMs;
+        status.receivedFrames = stats.receivedFrames;
+        status.controllerSubmittedFrames = stats.controllerSubmittedFrames;
         status.receivedPoints = stats.receivedPoints;
         status.droppedPoints = stats.droppedPoints;
         status.underrunEvents = stats.callbackUnderrunEvents;
@@ -839,6 +863,8 @@ public:
 
         const auto stats = getStatsSnapshot();
         snapshot.stats.receivedSlices = stats.receivedSlices;
+        snapshot.stats.receivedFrames = stats.receivedFrames;
+        snapshot.stats.controllerSubmittedFrames = stats.controllerSubmittedFrames;
         snapshot.stats.receivedPoints = stats.receivedPoints;
         snapshot.stats.receivedLitPoints = stats.receivedLitPoints;
         snapshot.stats.callbackCalls = stats.callbackCalls;
@@ -855,6 +881,8 @@ public:
         snapshot.stats.totalBufferedPoints = stats.totalBufferedPoints;
         snapshot.stats.outputPointRate = stats.outputPointRate;
         snapshot.stats.observedInputPointRate = stats.observedInputPointRate;
+        snapshot.stats.observedInputFrameRate = stats.observedInputFrameRate;
+        snapshot.stats.observedControllerFrameRate = stats.observedControllerFrameRate;
         snapshot.stats.latencyMs = stats.latencyMs;
         snapshot.stats.targetBufferedPoints = stats.targetBufferedPoints;
         snapshot.stats.buffering = stats.buffering;
@@ -867,13 +895,25 @@ public:
         }
 
         const auto now = std::chrono::steady_clock::now();
-        if ((now - lastStatsLog_) < 1s) {
+        const auto previousStatsLog = lastStatsLog_;
+        if (previousStatsLog != std::chrono::steady_clock::time_point{} &&
+            (now - previousStatsLog) < 1s) {
             return;
         }
         lastStatsLog_ = now;
 
-        const auto stats = getStatsSnapshot();
+        auto stats = getStatsSnapshot();
         const bool awaitingInput = isAwaitingInput();
+        const double elapsedSeconds =
+            previousStatsLog == std::chrono::steady_clock::time_point{}
+                ? 1.0
+                : std::max(0.001, std::chrono::duration<double>(
+                                        now - previousStatsLog).count());
+        const auto deltaRxFrames = stats.receivedFrames - lastStats_.receivedFrames;
+        const auto deltaControllerFrames =
+            stats.controllerSubmittedFrames >= lastStats_.controllerSubmittedFrames
+                ? stats.controllerSubmittedFrames - lastStats_.controllerSubmittedFrames
+                : 0;
         const auto deltaRxPts = stats.receivedPoints - lastStats_.receivedPoints;
         const auto deltaRxLitPts = stats.receivedLitPoints - lastStats_.receivedLitPoints;
         const auto deltaRxSlices = stats.receivedSlices - lastStats_.receivedSlices;
@@ -885,6 +925,17 @@ public:
         const auto deltaOutPts = stats.emittedPoints - lastStats_.emittedPoints;
         const auto deltaBlank = stats.blankFillPoints - lastStats_.blankFillPoints;
         const auto deltaDropped = stats.droppedPoints - lastStats_.droppedPoints;
+        const auto inputFrameRateMilli = static_cast<std::uint32_t>(
+            std::llround((static_cast<double>(deltaRxFrames) * 1000.0) / elapsedSeconds));
+        observedInputFrameRateMilli_.store(inputFrameRateMilli, std::memory_order_relaxed);
+        stats.observedInputFrameRate = static_cast<double>(inputFrameRateMilli) / 1000.0;
+        const auto controllerFrameRateMilli = static_cast<std::uint32_t>(
+            std::llround((static_cast<double>(deltaControllerFrames) * 1000.0) /
+                         elapsedSeconds));
+        observedControllerFrameRateMilli_.store(controllerFrameRateMilli,
+                                                std::memory_order_relaxed);
+        stats.observedControllerFrameRate =
+            static_cast<double>(controllerFrameRateMilli) / 1000.0;
 
         if (awaitingInput && deltaRxSlices == 0 && deltaRxPts == 0 && deltaRxLitPts == 0) {
             lastStats_ = stats;
@@ -894,6 +945,8 @@ public:
         std::ostringstream oss;
         oss << "[link:" << info_.label << "]"
             << " rx_slices/s=" << deltaRxSlices
+            << " rx_frames/s=" << deltaRxFrames
+            << " ctrl_frames/s=" << deltaControllerFrames
             << " rx_pts/s=" << deltaRxPts
             << " rx_lit_pts/s=" << deltaRxLitPts
             << " cb/s=" << deltaCb
@@ -902,6 +955,10 @@ public:
             << " out_pts/s=" << deltaOutPts
             << " pps=" << stats.outputPointRate
             << " in_pps=" << stats.observedInputPointRate
+            << " in_fps=" << std::fixed << std::setprecision(1)
+            << stats.observedInputFrameRate
+            << " ctrl_fps=" << stats.observedControllerFrameRate
+            << std::defaultfloat
             << " lat_ms=" << stats.latencyMs
             << " lat_pts=" << stats.targetBufferedPoints
             << " buffering=" << (stats.buffering ? 1 : 0)
@@ -1047,7 +1104,10 @@ private:
             availableAtStart + downstreamBuffer.pointsInBuffer;
         const bool frameReplacementMode =
             frameReplacementMode_.load(std::memory_order_relaxed);
+        const bool sourceIdle = isAwaitingInputLocked(std::chrono::steady_clock::now(), 2000ms);
+        const bool allowShortRead = req.allowShortRead && !sourceIdle;
         if (!frameReplacementMode &&
+            !allowShortRead &&
             buffering_.load(std::memory_order_relaxed) &&
             totalBufferedAtStart < targetPoints) {
             const std::size_t missing = req.minimumPointsRequired;
@@ -1090,20 +1150,28 @@ private:
 
         if (out.size() < req.minimumPointsRequired) {
             const std::size_t blankCount = req.minimumPointsRequired - out.size();
-            callbackUnderrunEvents_.fetch_add(1, std::memory_order_relaxed);
-            callbackUnderrunPoints_.fetch_add(blankCount, std::memory_order_relaxed);
-            if (!frameReplacementMode) {
-                maybeIncreaseLatencyOnUnderrun(blankCount, req.minimumPointsRequired, targetPoints);
+            if (allowShortRead) {
+                if (!frameReplacementMode) {
+                    buffering_.store(true, std::memory_order_relaxed);
+                }
+            } else {
+                callbackUnderrunEvents_.fetch_add(1, std::memory_order_relaxed);
+                callbackUnderrunPoints_.fetch_add(blankCount, std::memory_order_relaxed);
+                if (!frameReplacementMode) {
+                    maybeIncreaseLatencyOnUnderrun(blankCount,
+                                                   req.minimumPointsRequired,
+                                                   targetPoints);
+                }
+                logUnderrunIfDue(req,
+                                 availableAtStart,
+                                 downstreamBuffer.pointsInBuffer,
+                                 blankCount,
+                                 targetPoints,
+                                 false);
+                appendFallbackPoints(out, blankCount);
+                blankFillPoints_.fetch_add(blankCount, std::memory_order_relaxed);
+                buffering_.store(!frameReplacementMode, std::memory_order_relaxed);
             }
-            logUnderrunIfDue(req,
-                             availableAtStart,
-                             downstreamBuffer.pointsInBuffer,
-                             blankCount,
-                             targetPoints,
-                             false);
-            appendFallbackPoints(out, blankCount);
-            blankFillPoints_.fetch_add(blankCount, std::memory_order_relaxed);
-            buffering_.store(!frameReplacementMode, std::memory_order_relaxed);
         }
 
         if (ioTraceEnabled()) {
@@ -1116,8 +1184,11 @@ private:
                   << " wrote=" << toWrite
                   << " queue_after=" << pendingPoints_.size()
                   << " frame_replacement=" << (frameReplacementMode ? 1 : 0)
+                  << " short_read=" << (allowShortRead ? 1 : 0)
                   << " buffering=" << (buffering_.load(std::memory_order_relaxed) ? 1 : 0);
-            tracePointVector(out.size() == toWrite ? "fill" : "fill_underrun",
+            const bool shortRead = allowShortRead && out.size() < req.minimumPointsRequired;
+            tracePointVector(shortRead ? "fill_short" :
+                                 (out.size() == toWrite ? "fill" : "fill_underrun"),
                              info_.label,
                              out,
                              extra.str());
@@ -1263,6 +1334,7 @@ private:
     std::atomic<bool> buffering_{true};
     std::chrono::steady_clock::time_point lastUnderrunLog_{};
     std::atomic<std::uint64_t> receivedSlices_{0};
+    std::atomic<std::uint64_t> receivedFrames_{0};
     std::atomic<std::uint64_t> receivedPoints_{0};
     std::atomic<std::uint64_t> receivedLitPoints_{0};
     std::atomic<std::uint64_t> callbackCalls_{0};
@@ -1271,6 +1343,8 @@ private:
     std::atomic<std::uint64_t> emittedPoints_{0};
     std::atomic<std::uint64_t> blankFillPoints_{0};
     std::atomic<std::uint64_t> droppedPoints_{0};
+    std::atomic<std::uint32_t> observedInputFrameRateMilli_{0};
+    std::atomic<std::uint32_t> observedControllerFrameRateMilli_{0};
     mutable std::atomic<std::size_t> lastObservedDownstreamBufferedPoints_{0};
     mutable std::atomic<std::size_t> lastObservedDownstreamPrefetchedPoints_{0};
     mutable std::atomic<std::size_t> lastObservedDownstreamTransportBufferedPoints_{0};
