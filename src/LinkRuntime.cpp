@@ -1460,6 +1460,27 @@ DiscoveredControllerSnapshot makeDiscoveredControllerSnapshot(
     return snapshot;
 }
 
+std::shared_ptr<LiberaTarget> makeLiberaTarget(
+    std::shared_ptr<libera::core::LaserController> controller,
+    const libera::core::ControllerInfo& info,
+    const LinkOptions& options,
+    LogSink logger) {
+    virtual_controller::TargetInfo targetInfo;
+    targetInfo.id = info.idValue();
+    targetInfo.label = info.labelValue();
+    targetInfo.type = info.type();
+    targetInfo.maxPointRate = info.maxPointRate();
+
+    return std::make_shared<LiberaTarget>(
+        std::move(controller),
+        std::move(targetInfo),
+        options.maxQueuedPoints,
+        options.latencyMs,
+        options.maxLatencyMs,
+        options.autoLatency,
+        std::move(logger));
+}
+
 std::vector<DiscoveredControllerSnapshot> buildDiscoveredControllerSnapshots(
     const std::vector<std::unique_ptr<libera::core::ControllerInfo>>& discovered) {
     std::vector<DiscoveredControllerSnapshot> snapshots;
@@ -1488,10 +1509,108 @@ struct ActiveVirtualControllerHost {
     std::string id;
     std::string displayName;
     std::string instanceKey;
+    virtual_controller::VirtualControllerHostInfo info;
+    std::unordered_map<std::string, std::string> options;
     std::unique_ptr<virtual_controller::VirtualControllerHost> host;
     std::vector<std::shared_ptr<LiberaTarget>> targets;
     std::vector<virtual_controller::VirtualControllerEndpoint> endpoints;
 };
+
+struct PendingVirtualControllerHostGroup {
+    virtual_controller::VirtualControllerHostInfo info;
+    std::string instanceKey;
+    std::unordered_map<std::string, std::string> options;
+    std::vector<std::shared_ptr<LiberaTarget>> targets;
+};
+
+bool hostOptionsEqual(const std::unordered_map<std::string, std::string>& a,
+                      const std::unordered_map<std::string, std::string>& b) {
+    return a == b;
+}
+
+bool activeHostMatchesGroup(const ActiveVirtualControllerHost& activeHost,
+                            const PendingVirtualControllerHostGroup& group) {
+    return activeHost.id == group.info.id &&
+           activeHost.instanceKey == group.instanceKey &&
+           hostOptionsEqual(activeHost.options, group.options);
+}
+
+std::set<std::string> targetIdSet(const std::vector<std::shared_ptr<LiberaTarget>>& targets) {
+    std::set<std::string> ids;
+    for (const auto& target : targets) {
+        if (target) {
+            ids.insert(target->targetInfo().id);
+        }
+    }
+    return ids;
+}
+
+virtual_controller::VirtualControllerHostContext
+makeVirtualControllerHostContext(const std::vector<std::shared_ptr<LiberaTarget>>& targets) {
+    virtual_controller::VirtualControllerHostContext context;
+    context.targets.reserve(targets.size());
+    for (const auto& target : targets) {
+        context.targets.push_back(virtual_controller::Target{target});
+    }
+    return context;
+}
+
+std::optional<ActiveVirtualControllerHost> startActiveHostGroup(
+    const PendingVirtualControllerHostGroup& group,
+    std::uint32_t sliceDurationUs,
+    std::string& error) {
+    virtual_controller::VirtualControllerHostConfig virtualControllerHostConfig;
+    virtualControllerHostConfig.sliceDurationUs = sliceDurationUs;
+    virtualControllerHostConfig.options = group.options;
+
+    auto virtualControllerHost =
+        virtual_controller::createVirtualControllerHost(group.info.id,
+                                                        virtualControllerHostConfig,
+                                                        error);
+    if (!virtualControllerHost) {
+        return std::nullopt;
+    }
+
+    auto context = makeVirtualControllerHostContext(group.targets);
+    if (!virtualControllerHost->start(context, error)) {
+        if (error.empty()) {
+            error = group.info.displayName + " virtual controller host failed to start.";
+        }
+        return std::nullopt;
+    }
+
+    ActiveVirtualControllerHost activeHost;
+    activeHost.id = group.info.id;
+    activeHost.displayName = std::string(virtualControllerHost->displayName());
+    activeHost.instanceKey = group.instanceKey;
+    activeHost.info = group.info;
+    activeHost.options = group.options;
+    activeHost.targets = group.targets;
+    activeHost.endpoints = virtualControllerHost->endpoints();
+    activeHost.host = std::move(virtualControllerHost);
+    return activeHost;
+}
+
+std::pair<std::string, std::string> activeVirtualControllerSummary(
+    const std::vector<ActiveVirtualControllerHost>& activeHosts) {
+    if (activeHosts.empty()) {
+        return {};
+    }
+    if (activeHosts.size() == 1) {
+        return {activeHosts.front().id, activeHosts.front().displayName};
+    }
+
+    const bool sameHostType = std::all_of(
+        activeHosts.begin(), activeHosts.end(), [&](const ActiveVirtualControllerHost& activeHost) {
+            return activeHost.id == activeHosts.front().id;
+        });
+    if (sameHostType) {
+        return {activeHosts.front().id,
+                activeHosts.front().displayName + " (" +
+                    std::to_string(activeHosts.size()) + " instances)"};
+    }
+    return {"mixed", "Multiple virtual controllers"};
+}
 
 const ActiveVirtualControllerHost* activeHostForTarget(
     const std::vector<ActiveVirtualControllerHost>& activeHosts,
@@ -1523,6 +1642,7 @@ struct LinkRuntime::Impl {
     std::string activeVirtualControllerHostId;
     std::string activeVirtualControllerHostDisplayName;
     std::set<std::string> activeDisabledControllerTypes;
+    LinkOptions activeOptions;
 
     std::atomic<bool> stopRequested{false};
     LogSink logger = std::make_shared<RuntimeLogger>();
@@ -1767,18 +1887,344 @@ bool LinkRuntime::start(const LinkOptions& options) {
 
 bool LinkRuntime::start(const LinkOptions& options,
                           const std::set<std::string>& selectedControllerIds) {
+    bool updateRunningLink = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (impl_->state == RuntimeState::Scanning ||
+        if (impl_->state == RuntimeState::Running) {
+            impl_->statusMessage = "Updating link...";
+            updateRunningLink = true;
+        } else if (impl_->state == RuntimeState::Scanning ||
             impl_->state == RuntimeState::Starting ||
-            impl_->state == RuntimeState::Running ||
             impl_->state == RuntimeState::StopRequested) {
             return false;
+        } else {
+            impl_->state = RuntimeState::Starting;
+            impl_->statusMessage = "Discovering controllers...";
+            impl_->activeVirtualControllerHostId.clear();
+            impl_->activeVirtualControllerHostDisplayName.clear();
         }
-        impl_->state = RuntimeState::Starting;
-        impl_->statusMessage = "Discovering controllers...";
-        impl_->activeVirtualControllerHostId.clear();
-        impl_->activeVirtualControllerHostDisplayName.clear();
+    }
+
+    if (updateRunningLink) {
+        if (selectedControllerIds.empty()) {
+            stop();
+            return true;
+        }
+
+        LinkOptions activeOptions;
+        std::unordered_map<std::string, std::shared_ptr<LiberaTarget>> targetById;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            activeOptions = impl_->activeOptions;
+            for (const auto& target : impl_->targets) {
+                if (target) {
+                    targetById.emplace(target->targetInfo().id, target);
+                }
+            }
+        }
+
+        const bool targetRuntimeOptionsChanged =
+            activeOptions.disabledControllerTypes != options.disabledControllerTypes ||
+            activeOptions.maxQueuedPoints != options.maxQueuedPoints ||
+            activeOptions.latencyMs != options.latencyMs ||
+            activeOptions.maxLatencyMs != options.maxLatencyMs ||
+            activeOptions.autoLatency != options.autoLatency ||
+            activeOptions.maxDacs != options.maxDacs ||
+            options.maxDacs > 0;
+        if (targetRuntimeOptionsChanged) {
+            impl_->logger->info("Restarting link because controller runtime options changed.");
+            stop();
+            return start(options, selectedControllerIds);
+        }
+
+        std::set<std::string> missingControllerIds;
+        for (const auto& controllerId : selectedControllerIds) {
+            if (targetById.find(controllerId) == targetById.end()) {
+                missingControllerIds.insert(controllerId);
+            }
+        }
+
+        if (!missingControllerIds.empty()) {
+            impl_->configureLiberaSystem(options);
+            auto discovered =
+                discoverControllers(*impl_->liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
+            auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
+            {
+                std::lock_guard<std::mutex> lock(impl_->mutex);
+                impl_->hasDiscoveryResults = true;
+                impl_->discoveredControllers = discoveredSnapshots.size();
+                impl_->discovered = std::move(discoveredSnapshots);
+            }
+
+            for (const auto& info : discovered) {
+                if (!info || missingControllerIds.find(info->idValue()) == missingControllerIds.end()) {
+                    continue;
+                }
+
+                std::string skipReason;
+                if (!shouldLinkController(*info, skipReason)) {
+                    std::ostringstream oss;
+                    oss << "Skipping " << describeController(*info) << " (" << skipReason << ")";
+                    impl_->logger->info(oss.str());
+                    missingControllerIds.erase(info->idValue());
+                    continue;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(impl_->mutex);
+                    std::ostringstream oss;
+                    oss << "Connecting " << info->labelValue() << "...";
+                    impl_->statusMessage = oss.str();
+                }
+
+                auto controller = impl_->liberaSystem->connectController(*info);
+                if (!controller) {
+                    std::ostringstream oss;
+                    oss << "Skipping " << info->labelValue() << " (connect failed)";
+                    impl_->logger->error(oss.str());
+                    missingControllerIds.erase(info->idValue());
+                    continue;
+                }
+
+                auto target = makeLiberaTarget(controller, *info, options, impl_->logger);
+                targetById[target->targetInfo().id] = std::move(target);
+                missingControllerIds.erase(info->idValue());
+            }
+
+            for (const auto& missingControllerId : missingControllerIds) {
+                impl_->logger->error("Selected controller is no longer discoverable: " +
+                                     missingControllerId);
+            }
+        }
+
+        const auto fallbackVirtualControllerHostInfo = [&]() -> std::optional<virtual_controller::VirtualControllerHostInfo> {
+            if (!options.virtualControllerHostId.empty()) {
+                return virtual_controller::findVirtualControllerHost(options.virtualControllerHostId);
+            }
+            return virtual_controller::defaultVirtualControllerHost();
+        }();
+
+        if (!options.virtualControllerHostId.empty() && !fallbackVirtualControllerHostInfo) {
+            const std::string error = "Unknown virtual controller host \"" +
+                                      options.virtualControllerHostId + "\".";
+            impl_->setState(RuntimeState::Failed, error);
+            impl_->logger->error(error);
+            return false;
+        }
+
+        std::unordered_map<std::string, VirtualControllerRoute> routesByControllerId;
+        routesByControllerId.reserve(options.virtualControllerRoutes.size());
+        for (const auto& route : options.virtualControllerRoutes) {
+            if (!route.controllerId.empty()) {
+                routesByControllerId[route.controllerId] = route;
+            }
+        }
+
+        std::vector<std::shared_ptr<LiberaTarget>> desiredTargets;
+        desiredTargets.reserve(selectedControllerIds.size());
+        std::vector<PendingVirtualControllerHostGroup> desiredGroups;
+        desiredGroups.reserve(selectedControllerIds.size());
+        for (const auto& controllerId : selectedControllerIds) {
+            const auto targetIt = targetById.find(controllerId);
+            if (targetIt == targetById.end() || !targetIt->second) {
+                continue;
+            }
+
+            const auto routeIt = routesByControllerId.find(controllerId);
+            const VirtualControllerRoute* route =
+                routeIt != routesByControllerId.end() ? &routeIt->second : nullptr;
+
+            std::optional<virtual_controller::VirtualControllerHostInfo> hostInfo;
+            if (route != nullptr && !route->hostId.empty()) {
+                hostInfo = virtual_controller::findVirtualControllerHost(route->hostId);
+            } else {
+                hostInfo = fallbackVirtualControllerHostInfo;
+            }
+            if (!hostInfo) {
+                const std::string hostId =
+                    route != nullptr && !route->hostId.empty() ? route->hostId : options.virtualControllerHostId;
+                const std::string error = hostId.empty()
+                                              ? "No virtual controller hosts are registered."
+                                              : "Unknown virtual controller host \"" + hostId + "\".";
+                impl_->setState(RuntimeState::Failed, error);
+                impl_->logger->error(error);
+                return false;
+            }
+
+            const std::string instanceKey =
+                route != nullptr && !route->hostInstanceKey.empty()
+                    ? route->hostInstanceKey
+                    : hostInfo->separateInstancePerTarget
+                          ? targetIt->second->targetInfo().id
+                          : hostInfo->id;
+            const auto& hostOptions =
+                route != nullptr ? route->options : options.virtualControllerHostOptions;
+
+            auto groupIt = std::find_if(
+                desiredGroups.begin(), desiredGroups.end(),
+                [&](const PendingVirtualControllerHostGroup& group) {
+                    return group.info.id == hostInfo->id &&
+                           group.instanceKey == instanceKey &&
+                           group.options == hostOptions;
+                });
+            if (groupIt == desiredGroups.end()) {
+                PendingVirtualControllerHostGroup group;
+                group.info = *hostInfo;
+                group.instanceKey = instanceKey;
+                group.options = hostOptions;
+                desiredGroups.push_back(std::move(group));
+                groupIt = std::prev(desiredGroups.end());
+            }
+            groupIt->targets.push_back(targetIt->second);
+            desiredTargets.push_back(targetIt->second);
+        }
+
+        if (desiredTargets.empty()) {
+            stop();
+            return true;
+        }
+
+        std::string updateError;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            std::vector<ActiveVirtualControllerHost> nextActiveHosts;
+            std::set<std::size_t> handledDesiredGroups;
+
+            auto failUpdate = [&](const std::string& error) {
+                for (auto& activeHost : nextActiveHosts) {
+                    if (activeHost.host) {
+                        activeHost.host->stop();
+                    }
+                }
+                for (auto& activeHost : impl_->virtualControllerHosts) {
+                    if (activeHost.host) {
+                        activeHost.host->stop();
+                    }
+                }
+                impl_->virtualControllerHosts.clear();
+                impl_->targets.clear();
+                impl_->activeVirtualControllerHostId.clear();
+                impl_->activeVirtualControllerHostDisplayName.clear();
+                impl_->state = RuntimeState::Failed;
+                impl_->statusMessage = error;
+                updateError = error;
+            };
+
+            for (auto& activeHost : impl_->virtualControllerHosts) {
+                const auto desiredIt = std::find_if(
+                    desiredGroups.begin(), desiredGroups.end(),
+                    [&](const PendingVirtualControllerHostGroup& group) {
+                        return activeHostMatchesGroup(activeHost, group);
+                    });
+
+                if (desiredIt == desiredGroups.end()) {
+                    if (activeHost.host) {
+                        activeHost.host->stop();
+                    }
+                    continue;
+                }
+
+                const std::size_t desiredIndex =
+                    static_cast<std::size_t>(std::distance(desiredGroups.begin(), desiredIt));
+                handledDesiredGroups.insert(desiredIndex);
+
+                const auto currentTargetIds = targetIdSet(activeHost.targets);
+                const auto desiredTargetIds = targetIdSet(desiredIt->targets);
+                if (currentTargetIds == desiredTargetIds) {
+                    if (activeHost.host) {
+                        activeHost.endpoints = activeHost.host->endpoints();
+                    }
+                    nextActiveHosts.push_back(std::move(activeHost));
+                    continue;
+                }
+
+                bool dynamicUpdateSucceeded =
+                    activeHost.host && activeHost.host->supportsDynamicTargets();
+                if (dynamicUpdateSucceeded) {
+                    for (const auto& target : activeHost.targets) {
+                        if (!target || desiredTargetIds.count(target->targetInfo().id) > 0) {
+                            continue;
+                        }
+                        std::string error;
+                        if (!activeHost.host->removeTarget(target->targetInfo().id, error)) {
+                            dynamicUpdateSucceeded = false;
+                            updateError = error;
+                            break;
+                        }
+                    }
+                }
+                if (dynamicUpdateSucceeded) {
+                    for (const auto& target : desiredIt->targets) {
+                        if (!target || currentTargetIds.count(target->targetInfo().id) > 0) {
+                            continue;
+                        }
+                        std::string error;
+                        if (!activeHost.host->addTarget(virtual_controller::Target{target}, error)) {
+                            dynamicUpdateSucceeded = false;
+                            updateError = error;
+                            break;
+                        }
+                    }
+                }
+
+                if (dynamicUpdateSucceeded) {
+                    activeHost.targets = desiredIt->targets;
+                    activeHost.endpoints = activeHost.host->endpoints();
+                    nextActiveHosts.push_back(std::move(activeHost));
+                    continue;
+                }
+
+                updateError.clear();
+                if (activeHost.host) {
+                    activeHost.host->stop();
+                }
+                std::string error;
+                auto restartedHost =
+                    startActiveHostGroup(*desiredIt, options.sliceDurationUs, error);
+                if (!restartedHost) {
+                    failUpdate(error);
+                    break;
+                }
+                nextActiveHosts.push_back(std::move(*restartedHost));
+            }
+
+            if (!updateError.empty()) {
+                impl_->logger->error(updateError);
+                return false;
+            }
+
+            for (std::size_t index = 0; index < desiredGroups.size(); ++index) {
+                if (handledDesiredGroups.count(index) > 0) {
+                    continue;
+                }
+
+                std::string error;
+                auto activeHost =
+                    startActiveHostGroup(desiredGroups[index], options.sliceDurationUs, error);
+                if (!activeHost) {
+                    failUpdate(error);
+                    break;
+                }
+                nextActiveHosts.push_back(std::move(*activeHost));
+            }
+
+            if (!updateError.empty()) {
+                impl_->logger->error(updateError);
+                return false;
+            }
+
+            impl_->virtualControllerHosts = std::move(nextActiveHosts);
+            impl_->targets = std::move(desiredTargets);
+            const auto summary = activeVirtualControllerSummary(impl_->virtualControllerHosts);
+            impl_->activeVirtualControllerHostId = summary.first;
+            impl_->activeVirtualControllerHostDisplayName = summary.second;
+            impl_->activeOptions = options;
+            impl_->state = RuntimeState::Running;
+            impl_->statusMessage = "Running";
+        }
+
+        impl_->logger->info("Link selection updated.");
+        return true;
     }
 
     impl_->logger->clear();
@@ -1908,20 +2354,7 @@ bool LinkRuntime::start(const LinkOptions& options,
             continue;
         }
 
-        virtual_controller::TargetInfo targetInfo;
-        targetInfo.id = info->idValue();
-        targetInfo.label = info->labelValue();
-        targetInfo.type = info->type();
-        targetInfo.maxPointRate = info->maxPointRate();
-
-        auto target = std::make_shared<LiberaTarget>(
-            controller,
-            std::move(targetInfo),
-            options.maxQueuedPoints,
-            options.latencyMs,
-            options.maxLatencyMs,
-            options.autoLatency,
-            impl_->logger);
+        auto target = makeLiberaTarget(controller, *info, options, impl_->logger);
 
         targets.push_back(std::move(target));
         ++startedTargets;
@@ -2076,6 +2509,8 @@ bool LinkRuntime::start(const LinkOptions& options,
         activeHost.id = group.info.id;
         activeHost.displayName = std::string(virtualControllerHost->displayName());
         activeHost.instanceKey = group.instanceKey;
+        activeHost.info = group.info;
+        activeHost.options = group.options;
         activeHost.targets = group.targets;
         activeHost.endpoints = virtualControllerHost->endpoints();
         activeHost.host = std::move(virtualControllerHost);
@@ -2122,6 +2557,7 @@ bool LinkRuntime::start(const LinkOptions& options,
         impl_->targets = std::move(targets);
         impl_->activeVirtualControllerHostId = activeVirtualControllerHostId;
         impl_->activeVirtualControllerHostDisplayName = activeVirtualControllerHostDisplayName;
+        impl_->activeOptions = options;
         impl_->state = RuntimeState::Running;
         impl_->statusMessage = "Running";
     }

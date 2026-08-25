@@ -118,30 +118,51 @@ target_link_libraries(libera_link_core
         Threads::Threads
 )
 
+function(libera_link_copy_libusb_runtime target_name)
+  if(WIN32 AND LIBERA_LINK_USE_BUNDLED_LIBUSB)
+    set(_libera_link_libusb_dll_debug
+        "${LIBERA_BUNDLED_LIBUSB_DLL_DIR_DEBUG}/libusb-1.0.dll")
+    set(_libera_link_libusb_dll_release
+        "${LIBERA_BUNDLED_LIBUSB_DLL_DIR_RELEASE}/libusb-1.0.dll")
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<$<CONFIG:Debug>:${_libera_link_libusb_dll_debug}>$<$<NOT:$<CONFIG:Debug>>:${_libera_link_libusb_dll_release}>"
+            "$<TARGET_FILE_DIR:${target_name}>/libusb-1.0.dll"
+        COMMENT "Copying bundled libusb runtime next to ${target_name}"
+        VERBATIM)
+  endif()
+endfunction()
+
 add_executable(libera_link src/main.cpp)
 target_link_libraries(libera_link PRIVATE libera_link_core)
+libera_link_copy_libusb_runtime(libera_link)
 
 option(LIBERA_LINK_BUILD_HARDWARE_TESTS "Build hardware tests (requires Helios USB)" OFF)
 add_executable(test_point_stream_framer
     extern/libera-laser/tests/test_point_stream_framer.cpp)
 target_link_libraries(test_point_stream_framer PRIVATE libera-core)
+libera_link_copy_libusb_runtime(test_point_stream_framer)
 
 add_executable(test_etherdream_virtual_controller_host
     tests/test_etherdream_virtual_controller_host.cpp)
 target_link_libraries(test_etherdream_virtual_controller_host PRIVATE libera_link_core)
+libera_link_copy_libusb_runtime(test_etherdream_virtual_controller_host)
 
 add_executable(test_libera_protocol_virtual_controller_host
     tests/test_libera_protocol_virtual_controller_host.cpp)
 target_link_libraries(test_libera_protocol_virtual_controller_host PRIVATE libera_link_core)
+libera_link_copy_libusb_runtime(test_libera_protocol_virtual_controller_host)
 
 add_executable(libera_protocol_sender_smoke
     tests/libera_protocol_sender_smoke.cpp)
 target_link_libraries(libera_protocol_sender_smoke PRIVATE libera-core)
+libera_link_copy_libusb_runtime(libera_protocol_sender_smoke)
 
 if(LIBERA_LINK_BUILD_HARDWARE_TESTS)
   add_executable(test_helios_usb_stream
       extern/libera-laser/tests/test_helios_usb_stream.cpp)
   target_link_libraries(test_helios_usb_stream PRIVATE libera-core)
+  libera_link_copy_libusb_runtime(test_helios_usb_stream)
 endif()
 
 if(MSVC)
@@ -270,6 +291,7 @@ if(LIBERA_LINK_BUILD_GUI)
         libera_link_core
         libera_link_imgui
         libera-plugin-ui-imgui)
+    libera_link_copy_libusb_runtime(libera_link_gui)
 
     if(APPLE)
       target_link_libraries(libera_link_gui PRIVATE ${APPKIT_FRAMEWORK})

@@ -229,6 +229,108 @@ void drawStatusLight(ImDrawList* drawList,
     drawList->AddCircle(center, radius, IM_COL32(255, 255, 255, 110), 24, 1.0f);
 }
 
+ImVec2 linkNodeStatusCenter(ImVec2 min, ImVec2 max) {
+    return ImVec2(max.x - 18.0f, (min.y + max.y) * 0.5f);
+}
+
+ImVec2 linkNodeInfoCenter(ImVec2 min, ImVec2 max) {
+    return ImVec2(max.x - 40.0f, (min.y + max.y) * 0.5f);
+}
+
+ImVec2 linkNodePowerCenter(ImVec2 min, ImVec2 max) {
+    return ImVec2(min.x + 18.0f, (min.y + max.y) * 0.5f);
+}
+
+ImVec2 centeredRectMin(ImVec2 center, float size) {
+    return ImVec2(center.x - size * 0.5f, center.y - size * 0.5f);
+}
+
+ImVec2 centeredRectMax(ImVec2 center, float size) {
+    return ImVec2(center.x + size * 0.5f, center.y + size * 0.5f);
+}
+
+bool hitTestRect(ImVec2 min,
+                 ImVec2 max,
+                 bool disabled,
+                 bool* hovered,
+                 bool* active = nullptr) {
+    if (max.x <= min.x || max.y <= min.y) {
+        if (hovered != nullptr) {
+            *hovered = false;
+        }
+        if (active != nullptr) {
+            *active = false;
+        }
+        return false;
+    }
+
+    const bool rectHovered =
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        ImGui::IsMouseHoveringRect(min, max);
+    if (hovered != nullptr) {
+        *hovered = rectHovered;
+    }
+    if (active != nullptr) {
+        *active = rectHovered && !disabled && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    }
+    return rectHovered && !disabled && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+}
+
+void drawInfoIcon(ImDrawList* drawList, ImVec2 center, bool hovered) {
+    const ImU32 color = hovered ? IM_COL32(225, 235, 245, 255)
+                                : IM_COL32(139, 154, 171, 220);
+    ImFont* font = ImGui::GetFont();
+    constexpr float iconFontSize = 13.0f;
+    const char* icon = ICON_FK_INFO_CIRCLE;
+    const ImVec2 iconSize = font->CalcTextSizeA(iconFontSize, FLT_MAX, 0.0f, icon);
+    drawList->AddText(font,
+                      iconFontSize,
+                      ImVec2(center.x - iconSize.x * 0.5f,
+                             center.y - iconSize.y * 0.5f + 0.5f),
+                      color,
+                      icon);
+}
+
+void drawPowerButton(ImDrawList* drawList,
+                     ImVec2 center,
+                     bool selected,
+                     bool pending,
+                     bool disabled,
+                     bool hovered,
+                     bool active) {
+    constexpr float radius = 11.0f;
+    const bool powered = selected || pending;
+    const ImU32 fillColor =
+        disabled ? IM_COL32(42, 47, 54, 150)
+                 : active ? IM_COL32(218, 145, 65, 255)
+                          : pending ? IM_COL32(142, 103, 28, 255)
+                                    : powered ? IM_COL32(174, 84, 0, 255)
+                                              : hovered ? IM_COL32(39, 47, 57, 255)
+                                                        : IM_COL32(20, 25, 32, 245);
+    const ImU32 borderColor =
+        disabled ? IM_COL32(96, 104, 114, 130)
+                 : powered ? IM_COL32(216, 132, 24, 255)
+                           : hovered ? IM_COL32(150, 160, 172, 240)
+                                     : IM_COL32(92, 106, 124, 220);
+    const ImU32 iconColor =
+        disabled ? IM_COL32(132, 136, 142, 185)
+                 : powered || hovered ? IM_COL32(255, 255, 255, 255)
+                                      : IM_COL32(150, 166, 185, 235);
+
+    drawList->AddCircleFilled(center, radius, fillColor, 24);
+    drawList->AddCircle(center, radius, borderColor, 24, 1.2f);
+
+    constexpr float pi = 3.1415926535f;
+    constexpr float iconRadius = 5.2f;
+    constexpr float iconStroke = 1.8f;
+    drawList->PathArcTo(center, iconRadius, pi * 1.75f, pi * 3.25f, 24);
+    drawList->PathStroke(iconColor, 0, iconStroke);
+    drawList->AddLine(ImVec2(center.x, center.y - 7.0f),
+                      ImVec2(center.x, center.y - 1.2f),
+                      iconColor,
+                      iconStroke);
+}
+
 void drawClippedText(ImDrawList* drawList,
                      ImVec2 min,
                      ImVec2 max,
@@ -255,17 +357,18 @@ void drawLinkNode(ImDrawList* drawList,
                   ImU32 lightColor,
                   bool lightGlow,
                   const std::string& secondaryLabel = std::string(),
-                  ImU32 secondaryTextColor = IM_COL32(168, 178, 190, 235)) {
+                  ImU32 secondaryTextColor = IM_COL32(168, 178, 190, 235),
+                  bool reservePowerButton = false) {
     const float rounding = 8.0f;
     drawList->AddRectFilled(min, max, fillColor, rounding);
     drawList->AddRect(min, max, borderColor, rounding, 0, 1.2f);
 
     const float lightRadius = 5.5f;
-    const ImVec2 lightCenter(min.x + 18.0f, (min.y + max.y) * 0.5f);
+    const ImVec2 lightCenter = linkNodeStatusCenter(min, max);
     drawStatusLight(drawList, lightCenter, lightRadius, lightColor, lightGlow);
 
-    const ImVec2 textMin(min.x + 34.0f, min.y + 4.0f);
-    const ImVec2 textMax(max.x - 12.0f, max.y - 4.0f);
+    const ImVec2 textMin(min.x + (reservePowerButton ? 40.0f : 12.0f), min.y + 4.0f);
+    const ImVec2 textMax(max.x - 56.0f, max.y - 4.0f);
     if (secondaryLabel.empty()) {
         drawClippedText(drawList, textMin, textMax, label, textColor);
         return;
@@ -557,11 +660,9 @@ int main() {
             }
         }
 
-        std::set<std::string> activeControllerIds;
         std::unordered_map<std::string, const libera_link::EndpointSnapshot*> endpointByControllerId;
         endpointByControllerId.reserve(snapshot.endpoints.size());
         for (const auto& endpoint : snapshot.endpoints) {
-            activeControllerIds.insert(endpoint.id);
             endpointByControllerId.emplace(endpoint.id, &endpoint);
         }
 
@@ -752,20 +853,32 @@ int main() {
                     endpointIt != endpointByControllerId.end() ? endpointIt->second : nullptr;
                 bool selected = enabledControllers.count(controller.id) > 0;
                 const bool disabled = !controller.linkable;
-                const float rowWidth = std::max(ImGui::GetContentRegionAvail().x - 4.0f, 420.0f);
+                const float rowWidth = std::max(ImGui::GetContentRegionAvail().x - 4.0f, 72.0f);
                 const float rowHeight = controllerNodeHeight + (controllerRowPadY * 2.0f);
                 const ImVec2 rowMin = ImGui::GetCursorScreenPos();
                 const ImVec2 rowMax(rowMin.x + rowWidth, rowMin.y + rowHeight);
                 const float innerPadX = 4.0f;
                 const float nodeHeight = controllerNodeHeight;
                 const float centerY = rowMin.y + controllerRowPadY + (nodeHeight * 0.5f);
-                float hostWidth = std::clamp(rowWidth * 0.24f, 160.0f, 260.0f);
-                float controllerWidth = std::clamp(rowWidth * 0.32f, 210.0f, 360.0f);
-                const float maxNodeWidth = rowWidth - (innerPadX * 2.0f) - 96.0f;
-                if (hostWidth + controllerWidth > maxNodeWidth) {
-                    const float scale = std::max(0.65f, maxNodeWidth / std::max(1.0f, hostWidth + controllerWidth));
-                    hostWidth *= scale;
-                    controllerWidth *= scale;
+                constexpr float wireMinWidth = 56.0f;
+                constexpr float hostMinWidth = 220.0f;
+                constexpr float hostMaxWidth = 360.0f;
+                constexpr float controllerMinWidth = 210.0f;
+                constexpr float controllerMaxWidth = 380.0f;
+                const float availableNodeWidth =
+                    std::max(1.0f, rowWidth - (innerPadX * 2.0f) - wireMinWidth);
+                float hostWidth =
+                    std::clamp(availableNodeWidth * 0.46f, hostMinWidth, hostMaxWidth);
+                float controllerWidth =
+                    std::clamp(availableNodeWidth * 0.42f, controllerMinWidth, controllerMaxWidth);
+                if (hostWidth + controllerWidth > availableNodeWidth) {
+                    if (availableNodeWidth <= 2.0f) {
+                        hostWidth = availableNodeWidth * 0.5f;
+                    } else {
+                        hostWidth =
+                            std::clamp(availableNodeWidth * 0.52f, 1.0f, availableNodeWidth - 1.0f);
+                    }
+                    controllerWidth = availableNodeWidth - hostWidth;
                 }
 
                 const ImVec2 hostMin(rowMin.x + innerPadX, centerY - nodeHeight * 0.5f);
@@ -775,21 +888,56 @@ int main() {
                 const ImVec2 wireStart(hostMax.x, centerY);
                 const ImVec2 wireEnd(controllerMin.x, centerY);
 
-                ImGui::InvisibleButton("wire-row", ImVec2(rowWidth, rowHeight));
-                const bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-                const bool hostSelectorHovered =
-                    rowHovered && ImGui::IsMouseHoveringRect(hostMin, hostMax);
-                const bool controllerHovered =
-                    rowHovered && ImGui::IsMouseHoveringRect(controllerMin, controllerMax);
-                const bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !disabled;
+                ImGui::Dummy(ImVec2(rowWidth, rowHeight));
+
+                constexpr float infoHitSize = 24.0f;
+                constexpr float powerHitSize = 28.0f;
+                const ImVec2 hostInfoCenter = linkNodeInfoCenter(hostMin, hostMax);
+                const ImVec2 hostInfoMin = centeredRectMin(hostInfoCenter, infoHitSize);
+                const ImVec2 hostInfoMax = centeredRectMax(hostInfoCenter, infoHitSize);
+                const ImVec2 hostPowerCenter = linkNodePowerCenter(hostMin, hostMax);
+                const ImVec2 hostPowerMin = centeredRectMin(hostPowerCenter, powerHitSize);
+                const ImVec2 hostPowerMax = centeredRectMax(hostPowerCenter, powerHitSize);
+                const ImVec2 controllerInfoCenter = linkNodeInfoCenter(controllerMin, controllerMax);
+                const ImVec2 controllerInfoMin = centeredRectMin(controllerInfoCenter, infoHitSize);
+                const ImVec2 controllerInfoMax = centeredRectMax(controllerInfoCenter, infoHitSize);
+
+                bool hostSelectorHovered = false;
+                bool hostInfoHovered = false;
+                bool controllerInfoHovered = false;
+                bool powerHovered = false;
+                bool powerActive = false;
+
+                const bool hostSelectorDisabled =
+                    disabled || availableVirtualControllerHosts.empty();
+                const ImVec2 hostSelectorMin(hostPowerMax.x + 4.0f, hostMin.y);
+                const ImVec2 hostSelectorMax(
+                    std::max(hostMin.x, hostInfoMin.x - 4.0f), hostMax.y);
                 const bool hostSelectorClicked =
-                    rowClicked && hostSelectorHovered && !availableVirtualControllerHosts.empty();
+                    hitTestRect(hostSelectorMin,
+                                hostSelectorMax,
+                                hostSelectorDisabled,
+                                &hostSelectorHovered);
+                const bool hostPowerClicked =
+                    hitTestRect(hostPowerMin,
+                                hostPowerMax,
+                                disabled,
+                                &powerHovered,
+                                &powerActive);
+                (void)hitTestRect(hostInfoMin,
+                                  hostInfoMax,
+                                  false,
+                                  &hostInfoHovered);
+                (void)hitTestRect(controllerInfoMin,
+                                  controllerInfoMax,
+                                  false,
+                                  &controllerInfoHovered);
+
                 if (hostSelectorClicked) {
                     ImGui::OpenPopup("host-route-popup");
                 }
 
-                const bool toggled = rowClicked && !hostSelectorClicked;
-                if (toggled) {
+                if (hostPowerClicked) {
                     selected = !selected;
                     if (selected) {
                         enabledControllers.insert(controller.id);
@@ -816,7 +964,6 @@ int main() {
                     hostOnline && endpoint &&
                     endpoint->stats.receivedPoints > 0 &&
                     endpoint->stats.observedInputPointRate > 0;
-                const char* controllerIngestLabel = "Controller ingest";
 
                 const ImU32 hostLight = hostOnline
                     ? IM_COL32(65, 234, 130, 255)
@@ -879,67 +1026,50 @@ int main() {
                         std::to_string(endpoint->virtualControllerEndpointPort);
                 }
 
+                std::string endpointAddressLabel;
+                if (endpoint) {
+                    if (!endpoint->virtualControllerEndpointAddress.empty() &&
+                        endpoint->virtualControllerEndpointPort > 0) {
+                        endpointAddressLabel =
+                            endpoint->virtualControllerEndpointAddress + ":" +
+                            std::to_string(endpoint->virtualControllerEndpointPort);
+                    } else if (!endpoint->virtualControllerEndpointAddress.empty()) {
+                        endpointAddressLabel = endpoint->virtualControllerEndpointAddress;
+                    } else if (!endpoint->virtualControllerEndpointValue.empty()) {
+                        endpointAddressLabel = endpoint->virtualControllerEndpointValue;
+                    }
+                }
+
+                const std::string hostStateLabel =
+                    hostOnline ? "Online"
+                               : hostFailed ? "Failed"
+                                            : pendingSelectionChange ? "Starting"
+                                                                     : selected ? "Enabled"
+                                                                                : "Off";
+                const std::string controllerStateLabel =
+                    !controller.linkable ? "Unavailable"
+                                         : active ? "Linked"
+                                                  : pendingSelectionChange ? "Starting"
+                                                                           : selected ? "Enabled"
+                                                                                      : "Off";
+
                 auto drawVirtualControllerTooltip = [&]() {
                     ImGui::BeginTooltip();
                     ImGui::Text("%s", hostLabel.c_str());
-                    ImGui::TextDisabled("Route: %s",
-                                        usingDefaultVirtualController ? "Default" : "Per-controller");
                     if (configuredControllerHostIt != availableVirtualControllerHosts.end()) {
                         ImGui::TextDisabled("ID: %s", configuredControllerHostIt->id.c_str());
-                        if (!configuredControllerHostIt->description.empty()) {
-                            ImGui::TextWrapped("%s", configuredControllerHostIt->description.c_str());
-                        }
                     } else if (!configuredControllerHostId.empty()) {
                         ImGui::TextDisabled("ID: %s", configuredControllerHostId.c_str());
                     }
-                    if (endpoint) {
+                    ImGui::TextDisabled("Route: %s",
+                                        usingDefaultVirtualController ? "Default" : "Per-controller");
+                    if (!endpointAddressLabel.empty()) {
+                        ImGui::TextDisabled("Address: %s", endpointAddressLabel.c_str());
+                    }
+                    ImGui::Text("State: %s", hostStateLabel.c_str());
+                    if (!snapshot.lastError.empty() && hostFailed) {
                         ImGui::Separator();
-                        if (!endpoint->virtualControllerEndpointLabel.empty()) {
-                            ImGui::Text("Presented as: %s",
-                                        endpoint->virtualControllerEndpointLabel.c_str());
-                        }
-                        if (!endpoint->virtualControllerEndpointKind.empty() ||
-                            !endpoint->virtualControllerEndpointValue.empty()) {
-                            ImGui::Text("Endpoint: %s %s",
-                                        endpoint->virtualControllerEndpointKind.c_str(),
-                                        endpoint->virtualControllerEndpointValue.c_str());
-                        }
-                        if (!endpoint->virtualControllerEndpointProtocol.empty()) {
-                            ImGui::Text("Protocol: %s",
-                                        endpoint->virtualControllerEndpointProtocol.c_str());
-                        }
-                        if (!endpoint->virtualControllerEndpointTransport.empty()) {
-                            if (!endpoint->virtualControllerEndpointAddress.empty() &&
-                                endpoint->virtualControllerEndpointPort > 0) {
-                                ImGui::Text("Transport: %s %s:%u",
-                                            endpoint->virtualControllerEndpointTransport.c_str(),
-                                            endpoint->virtualControllerEndpointAddress.c_str(),
-                                            endpoint->virtualControllerEndpointPort);
-                            } else {
-                                ImGui::Text("Transport: %s",
-                                            endpoint->virtualControllerEndpointTransport.c_str());
-                            }
-                        }
-                        if (endpoint->virtualControllerEndpointChannels > 0) {
-                            ImGui::Text("Channels: %u",
-                                        endpoint->virtualControllerEndpointChannels);
-                        }
-                        ImGui::Text("Input: %u pps",
-                                    endpoint->stats.observedInputPointRate);
-                        ImGui::Text("%s: %.1f fps",
-                                    controllerIngestLabel,
-                                    endpoint->stats.observedControllerFrameRate);
-                        ImGui::Text("Input frames: %.1f fps",
-                                    endpoint->stats.observedInputFrameRate);
-                        ImGui::Text("Controller frames: %llu",
-                                    static_cast<unsigned long long>(
-                                        endpoint->stats.controllerSubmittedFrames));
-                        ImGui::Text("Input frames total: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.receivedFrames));
-                        ImGui::Text("Received: %llu points",
-                                    static_cast<unsigned long long>(endpoint->stats.receivedPoints));
-                        ImGui::Text("Lit: %llu points",
-                                    static_cast<unsigned long long>(endpoint->stats.receivedLitPoints));
+                        ImGui::TextWrapped("Last error: %s", snapshot.lastError.c_str());
                     }
                     ImGui::EndTooltip();
                 };
@@ -947,72 +1077,19 @@ int main() {
                 auto drawControllerTooltip = [&]() {
                     ImGui::BeginTooltip();
                     ImGui::Text("%s", controller.label.c_str());
-                    ImGui::TextDisabled("ID: %s", controller.id.c_str());
                     ImGui::Text("Type: %s", controller.type.c_str());
-                    ImGui::Text("Usage: %s", controller.usage.c_str());
-                    if (controller.maxPointRate > 0) {
-                        ImGui::Text("Max: %u pps", controller.maxPointRate);
+                    ImGui::TextDisabled("ID: %s", controller.id.c_str());
+                    if (!endpointAddressLabel.empty()) {
+                        ImGui::TextDisabled("Address: %s", endpointAddressLabel.c_str());
                     }
+                    ImGui::Text("State: %s", controllerStateLabel.c_str());
                     if (!controller.note.empty()) {
-                        ImGui::TextWrapped("%s", controller.note.c_str());
-                    }
-                    if (endpoint) {
                         ImGui::Separator();
-                        if (!endpoint->virtualControllerEndpointLabel.empty()) {
-                            ImGui::Text("Endpoint: %s", endpoint->virtualControllerEndpointLabel.c_str());
-                        }
-                        if (!endpoint->virtualControllerEndpointProtocol.empty()) {
-                            ImGui::Text("Protocol: %s", endpoint->virtualControllerEndpointProtocol.c_str());
-                        }
-                        if (!endpoint->virtualControllerEndpointTransport.empty()) {
-                            if (!endpoint->virtualControllerEndpointAddress.empty() &&
-                                endpoint->virtualControllerEndpointPort > 0) {
-                                ImGui::Text("Transport: %s %s:%u",
-                                            endpoint->virtualControllerEndpointTransport.c_str(),
-                                            endpoint->virtualControllerEndpointAddress.c_str(),
-                                            endpoint->virtualControllerEndpointPort);
-                            } else {
-                                ImGui::Text("Transport: %s",
-                                            endpoint->virtualControllerEndpointTransport.c_str());
-                            }
-                        }
-                        if (!endpoint->virtualControllerHostDisplayName.empty()) {
-                            ImGui::Text("Virtual Controller: %s", endpoint->virtualControllerHostDisplayName.c_str());
-                        }
-                        ImGui::Text("Input: %u pps", endpoint->stats.observedInputPointRate);
-                        ImGui::Text("%s: %.1f fps",
-                                    controllerIngestLabel,
-                                    endpoint->stats.observedControllerFrameRate);
-                        ImGui::Text("Input frames: %.1f fps",
-                                    endpoint->stats.observedInputFrameRate);
-                        ImGui::Text("Output: %u pps", endpoint->stats.outputPointRate);
-                        ImGui::Text("Controller frames: %llu",
-                                    static_cast<unsigned long long>(
-                                        endpoint->stats.controllerSubmittedFrames));
-                        ImGui::Text("Input frames total: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.receivedFrames));
-                        ImGui::Text("Received: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.receivedPoints));
-                        ImGui::Text("Lit received: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.receivedLitPoints));
-                        ImGui::Text("Emitted: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.emittedPoints));
-                        ImGui::Text("Latency: %ums", endpoint->stats.latencyMs);
-                        ImGui::Text("Buffered: %zu / %zu",
-                                    endpoint->stats.totalBufferedPoints,
-                                    endpoint->stats.targetBufferedPoints);
-                        ImGui::Text("Local queue: %zu", endpoint->stats.queuedPoints);
-                        ImGui::Text("Controller: %zu", endpoint->stats.controllerBufferedPoints);
-                        ImGui::Text("Controller prefetch: %zu",
-                                    endpoint->stats.controllerPrefetchedPoints);
-                        ImGui::Text("Controller transport: %zu",
-                                    endpoint->stats.controllerTransportBufferedPoints);
-                        ImGui::Text("Blank fill: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.blankFillPoints));
-                        ImGui::Text("Underruns: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.callbackUnderrunEvents));
-                        ImGui::Text("Dropped: %llu",
-                                    static_cast<unsigned long long>(endpoint->stats.droppedPoints));
+                        ImGui::TextWrapped("Reason: %s", controller.note.c_str());
+                    }
+                    if (!snapshot.lastError.empty() && hostFailed) {
+                        ImGui::Separator();
+                        ImGui::TextWrapped("Last error: %s", snapshot.lastError.c_str());
                     }
                     ImGui::EndTooltip();
                 };
@@ -1065,13 +1142,23 @@ int main() {
                              hostMax,
                              hostLabel,
                              hostFill,
-                             hostSelectorHovered ? IM_COL32(128, 181, 222, 230)
-                                                 : hostOnline ? activeBorder : idleBorder,
+                             (hostSelectorHovered && !hostSelectorDisabled)
+                                 ? IM_COL32(128, 181, 222, 230)
+                                 : hostOnline ? activeBorder : idleBorder,
                              textColor,
                              hostLight,
                              hostOnline,
                              hostSecondaryLabel,
-                             secondaryTextColor);
+                             secondaryTextColor,
+                             true);
+                drawPowerButton(drawList,
+                                hostPowerCenter,
+                                selected,
+                                pendingSelectionChange,
+                                disabled,
+                                powerHovered,
+                                powerActive);
+                drawInfoIcon(drawList, hostInfoCenter, hostInfoHovered);
                 drawVirtualWire(drawList,
                                 wireStart,
                                 wireEnd,
@@ -1088,11 +1175,12 @@ int main() {
                              textColor,
                              controllerLight,
                              active);
+                drawInfoIcon(drawList, controllerInfoCenter, controllerInfoHovered);
 
                 if (!ImGui::IsPopupOpen("host-route-popup")) {
-                    if (controllerHovered) {
+                    if (controllerInfoHovered) {
                         drawControllerTooltip();
-                    } else if (hostSelectorHovered) {
+                    } else if (hostInfoHovered) {
                         drawVirtualControllerTooltip();
                     }
                 }
@@ -1278,8 +1366,6 @@ int main() {
         const auto targetControllerIds = selectedLinkableIds();
         const bool linkRunning = snapshot.state == libera_link::RuntimeState::Running ||
                                    snapshot.state == libera_link::RuntimeState::StopRequested;
-        const bool linkSelectionMatches = activeControllerIds == targetControllerIds;
-        const bool linkVirtualControllerMatches = !linkRunning || !linkSyncPending;
 
         if (!scanInFlight && !startInFlight && !stopInFlight) {
             if (rescanInFlight) {
@@ -1292,19 +1378,14 @@ int main() {
                     rescanInFlight = false;
                 }
             } else if (linkSyncPending) {
-                if (linkRunning) {
-                    if (!linkSelectionMatches || !linkVirtualControllerMatches) {
-                        launchStop();
-                    } else {
-                        linkSyncPending = false;
-                    }
+                if (!targetControllerIds.empty()) {
+                    linkSyncPending = false;
+                    launchSelectedStart(targetControllerIds);
+                } else if (linkRunning) {
+                    linkSyncPending = false;
+                    launchStop();
                 } else {
-                    if (!targetControllerIds.empty()) {
-                        linkSyncPending = false;
-                        launchSelectedStart(targetControllerIds);
-                    } else {
-                        linkSyncPending = false;
-                    }
+                    linkSyncPending = false;
                 }
             }
         }

@@ -871,23 +871,103 @@ void ensureBuiltInLiberaProtocolVirtualControllerHostLinked() {}
 struct LiberaProtocolVirtualControllerHost::Impl {
     HostOptions options;
     std::vector<std::unique_ptr<TargetServer>> servers;
+    std::mutex serversMutex;
     std::thread advertiserThread;
     std::atomic<bool> active{false};
+
+    std::size_t nextServerIndexLocked() const {
+        std::size_t index = 0;
+        while (true) {
+            const bool inUse = std::any_of(
+                servers.begin(), servers.end(), [&](const auto& server) {
+                    return server &&
+                           server->endpoint().port ==
+                               static_cast<std::uint16_t>(
+                                   std::min<unsigned>(
+                                       std::numeric_limits<std::uint16_t>::max(),
+                                       static_cast<unsigned>(options.tcpPort) +
+                                           static_cast<unsigned>(index)));
+                });
+            if (!inUse) {
+                return index;
+            }
+            ++index;
+        }
+    }
+
+    bool addServer(Target target, std::string& error) {
+        if (!target.sink) {
+            error = "Libera protocol target is missing a sink.";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(serversMutex);
+        const auto duplicate = std::find_if(
+            servers.begin(), servers.end(), [&](const auto& server) {
+                return server &&
+                       server->endpoint().targetId == target.sink->targetInfo().id;
+            });
+        if (duplicate != servers.end()) {
+            return true;
+        }
+
+        const std::size_t index = nextServerIndexLocked();
+        const auto port = static_cast<std::uint16_t>(
+            std::min<unsigned>(
+                std::numeric_limits<std::uint16_t>::max(),
+                static_cast<unsigned>(options.tcpPort) +
+                    static_cast<unsigned>(index)));
+        auto server = std::make_unique<TargetServer>(target, options, port, index);
+        if (!server->start(error)) {
+            return false;
+        }
+        servers.push_back(std::move(server));
+        return true;
+    }
+
+    bool removeServer(std::string_view targetId, std::string& error) {
+        std::unique_ptr<TargetServer> removed;
+        {
+            std::lock_guard<std::mutex> lock(serversMutex);
+            const auto it = std::find_if(
+                servers.begin(), servers.end(), [&](const auto& server) {
+                    return server && server->endpoint().targetId == targetId;
+                });
+            if (it == servers.end()) {
+                error = "Libera protocol target is not active.";
+                return false;
+            }
+            removed = std::move(*it);
+            servers.erase(it);
+        }
+
+        if (removed) {
+            removed->stop();
+        }
+        return true;
+    }
 
     void stop() {
         if (!active.exchange(false, std::memory_order_acq_rel)) {
             return;
         }
 
-        for (auto& server : servers) {
+        if (advertiserThread.joinable()) {
+            advertiserThread.join();
+        }
+
+        std::vector<std::unique_ptr<TargetServer>> stoppedServers;
+        {
+            std::lock_guard<std::mutex> lock(serversMutex);
+            stoppedServers = std::move(servers);
+            servers.clear();
+        }
+
+        for (auto& server : stoppedServers) {
             if (server) {
                 server->stop();
             }
         }
-        if (advertiserThread.joinable()) {
-            advertiserThread.join();
-        }
-        servers.clear();
     }
 
     void advertiserLoop() {
@@ -901,12 +981,19 @@ struct LiberaProtocolVirtualControllerHost::Impl {
         socket.set_option(asio::socket_base::broadcast(true), ec);
 
         while (active.load(std::memory_order_acquire)) {
-            for (const auto& server : servers) {
-                if (!server) {
-                    continue;
+            std::vector<protocol::DiscoveryAdvertisement> advertisements;
+            {
+                std::lock_guard<std::mutex> lock(serversMutex);
+                advertisements.reserve(servers.size());
+                for (const auto& server : servers) {
+                    if (server) {
+                        advertisements.push_back(server->advertisement());
+                    }
                 }
-                const auto payload =
-                    protocol::encodeDiscoveryAdvertisement(server->advertisement());
+            }
+
+            for (const auto& advertisement : advertisements) {
+                const auto payload = protocol::encodeDiscoveryAdvertisement(advertisement);
                 for (const auto& address : options.broadcastAddresses) {
                     std::error_code addressError;
                     const auto ip = asio::ip::make_address(address, addressError);
@@ -958,20 +1045,11 @@ bool LiberaProtocolVirtualControllerHost::start(const VirtualControllerHostConte
     impl_->options = makeHostOptions(config_);
     impl_->active.store(true, std::memory_order_release);
 
-    std::size_t index = 0;
     for (const auto& target : context.targets) {
-        const auto port = static_cast<std::uint16_t>(
-            std::min<unsigned>(
-                std::numeric_limits<std::uint16_t>::max(),
-                static_cast<unsigned>(impl_->options.tcpPort) +
-                    static_cast<unsigned>(index)));
-        auto server = std::make_unique<TargetServer>(target, impl_->options, port, index);
-        if (!server->start(error)) {
+        if (!impl_->addServer(target, error)) {
             impl_->stop();
             return false;
         }
-        impl_->servers.push_back(std::move(server));
-        ++index;
     }
 
     if (impl_->options.discoveryEnabled) {
@@ -990,6 +1068,7 @@ bool LiberaProtocolVirtualControllerHost::running() const {
 
 std::vector<VirtualControllerEndpoint> LiberaProtocolVirtualControllerHost::endpoints() const {
     std::vector<VirtualControllerEndpoint> endpoints;
+    std::lock_guard<std::mutex> lock(impl_->serversMutex);
     endpoints.reserve(impl_->servers.size());
     for (const auto& server : impl_->servers) {
         if (server) {
@@ -997,6 +1076,26 @@ std::vector<VirtualControllerEndpoint> LiberaProtocolVirtualControllerHost::endp
         }
     }
     return endpoints;
+}
+
+bool LiberaProtocolVirtualControllerHost::supportsDynamicTargets() const {
+    return true;
+}
+
+bool LiberaProtocolVirtualControllerHost::addTarget(Target target, std::string& error) {
+    if (!impl_->active.load(std::memory_order_acquire)) {
+        error = "Libera protocol host is not running.";
+        return false;
+    }
+    return impl_->addServer(std::move(target), error);
+}
+
+bool LiberaProtocolVirtualControllerHost::removeTarget(std::string_view targetId, std::string& error) {
+    if (!impl_->active.load(std::memory_order_acquire)) {
+        error = "Libera protocol host is not running.";
+        return false;
+    }
+    return impl_->removeServer(targetId, error);
 }
 
 } // namespace libera_link::virtual_controller

@@ -132,6 +132,17 @@ public:
     virtual void stop() = 0;
     virtual bool running() const = 0;
     virtual std::vector<VirtualControllerEndpoint> endpoints() const = 0;
+    virtual bool supportsDynamicTargets() const { return false; }
+    virtual bool addTarget(Target target, std::string& error) {
+        (void)target;
+        error = "Virtual controller host does not support adding targets while running.";
+        return false;
+    }
+    virtual bool removeTarget(std::string_view targetId, std::string& error) {
+        (void)targetId;
+        error = "Virtual controller host does not support removing targets while running.";
+        return false;
+    }
 };
 
 } // namespace libera_link::virtual_controller

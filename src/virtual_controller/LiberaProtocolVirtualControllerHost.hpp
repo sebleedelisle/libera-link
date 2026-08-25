@@ -24,6 +24,9 @@ public:
     void stop() override;
     bool running() const override;
     std::vector<VirtualControllerEndpoint> endpoints() const override;
+    bool supportsDynamicTargets() const override;
+    bool addTarget(Target target, std::string& error) override;
+    bool removeTarget(std::string_view targetId, std::string& error) override;
 
 private:
     struct Impl;
