@@ -115,7 +115,9 @@ private:
 ## Minimal Frame Host
 
 Use `replaceFrame()` when the external protocol sends a complete frame that
-should replace what is currently queued for that target.
+should replace what is currently queued for that target. Use `submitFrame()`
+when the protocol sends complete frames that should be appended or scheduled
+without clearing pending target data.
 
 ```cpp
 void MyVirtualControllerHost::handleFramePacket(const ExternalFrame& frame) {
@@ -201,6 +203,10 @@ host appears in the GUI selector and can be selected from the CLI:
 ./build/libera_link --virtual-controller my-controller
 ```
 
+When a host registration lives in a static library, make sure the object file is
+not discarded by the linker. The built-in hosts use a small
+`ensureBuiltIn...Linked()` function and call it before querying the registry.
+
 ## Controller Routes
 
 `LinkOptions::virtualControllerHostId` is the default host for selected
@@ -213,7 +219,7 @@ options.virtualControllerHostId = "idn";
 
 VirtualControllerRoute route;
 route.controllerId = "etherdream:01020304";
-route.hostId = "ether-dream";
+route.hostId = "libera";
 options.virtualControllerRoutes.push_back(std::move(route));
 ```
 
@@ -222,6 +228,11 @@ using the same host and options share one host instance. If a host type needs a
 separate server or virtual device per physical target, register it with
 `separateInstancePerTarget = true`. A route can also set `hostInstanceKey`
 explicitly when a host needs custom grouping.
+
+If a running host returns `true` from `supportsDynamicTargets()`, `LinkRuntime`
+may call `addTarget()` or `removeTarget()` when the selected controller set
+changes. Hosts that keep the default `false` are restarted when their target
+membership changes.
 
 ## Endpoint Information
 
@@ -286,6 +297,8 @@ app starts
 - Provide structured `VirtualControllerHostOption` entries for settings that should appear in UI or CLI.
 - Use `SubmissionResult` and `TargetStatus` when your emulated protocol needs buffer or readiness replies.
 - Clamp and validate protocol data before constructing `LaserPoint` values.
+- Implement dynamic target add/remove only when the protocol can publish new or
+  removed endpoints without invalidating active clients.
 - Keep `stop()` prompt. It may be called while network or protocol threads are active.
 
 The current API is intentionally small. If a virtual controller host needs

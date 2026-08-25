@@ -14,19 +14,20 @@ Builds run on:
 
 - macOS
 - Linux
-- Windows
+- Windows Server 2022
 
-Push and tag builds package:
+Non-PR builds package:
 
 - macOS: signed and notarized `.dmg`
 - Linux: `.AppImage`
 - Windows: signed `.zip`
 
+Pull requests upload unsigned CI artifacts instead of packaged release files.
 No controller plugins are bundled in the release artifacts.
 
 ## Required GitHub Secrets
 
-Set these repository secrets before testing a tagged release:
+Set these repository secrets before running signed non-PR builds:
 
 - `APPLE_CERTIFICATE_P12`
   Base64-encoded Developer ID Application certificate export (`.p12`).
@@ -60,6 +61,20 @@ Set these repository variables for Windows signing:
 - tag `vX.Y.Z`
   Builds, signs/packages on all three platforms, and creates a GitHub Release.
 
+GitHub Release creation uses `softprops/action-gh-release` and the job grants
+`contents: write` to the default `GITHUB_TOKEN`.
+
+## Packaging Notes
+
+- macOS imports `APPLE_CERTIFICATE_P12` into a temporary keychain, signs the
+  app bundle and DMG, submits both to Apple notarization, staples the result,
+  and validates with `spctl`.
+- Linux installs build dependencies from `apt`, creates a desktop file and icon,
+  then uses `linuxdeploy-x86_64.AppImage`.
+- Windows downloads libusb `1.0.30`, stages the VS2022 x64 DLL/import library,
+  signs `.exe` files with Azure Trusted Signing, and packages the executable
+  pair with `libusb-1.0.dll`.
+
 ## Release Process
 
 1. Ensure the repository secrets and variables above are configured.
@@ -77,8 +92,11 @@ git push origin v0.1.0
 
 ## Notes
 
-- App versioning comes from `git describe --tags --abbrev=0`. If no matching tag is available, the version falls back to `0.0.0`.
+- App versioning comes from `git describe --tags --abbrev=0`. If no matching
+  tag is available, the version falls back to `0.0.0`.
 - The workflow uses `fetch-depth: 0` so tags are available during CI.
+- Pull requests do not receive signing secrets, so signing, notarization, and
+  release packaging only run for non-PR events.
 - Local preset verification command:
 
 ```bash

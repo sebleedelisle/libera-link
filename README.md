@@ -1,21 +1,21 @@
 # Libera Link
 
+Libera Link is a desktop and command-line bridge for laser controllers. It
+discovers controllers through Libera, then exposes them as software-facing
+virtual controllers that other laser software can talk to.
 
-Libera Link is a translator app for laser controllers. It finds controllers
-through Libera, then exposes them as software-facing virtual controllers that
-other laser software can talk to.
+The default virtual controller is IDN, so controllers such as Ether Dream,
+Helios USB, LaserCube, AVB, and plugin-backed Libera controllers can be made
+visible to IDN-aware software. Libera Link can also expose linked controllers
+through the Libera protocol for tools that speak Libera directly.
 
-The built-in virtual controller is IDN. That means
-controllers such as Ether Dream, Helios USB, LaserCube, AVB, and plugin-backed
-controllers can be made visible to IDN-aware software.
-
-It can also provide a network interface for USB devices - so connect all of your Helios
-to a small computer at stage and talk to it from another computer at front of house. 
-
-More end points will be added soon, along with a plug-in architecture for the host side as well as the output side. 
-
+This is useful when the output hardware is not on the same machine as the
+software driving it. For example, Helios USB controllers can be connected to a
+small computer at stage while another computer at front of house sends control
+data over the network.
 
 ## OMNIA LIBERA INTER SE
+
 ### Any software. Any laser.
 
 Libera Link is part of the growing Libera ecosystem - interoperable tools
@@ -26,9 +26,9 @@ Libera is built to break that cycle.
 
 ## Using The App
 
-Start Libera Link, wait for the controller scan to finish, then enable the
-controllers you want to link. The app will start the selected virtual controller
-and show one active endpoint per enabled controller.
+Start Libera Link, wait for the controller scan to finish, choose a virtual
+controller host, then enable the physical controllers you want to link. The app
+starts the selected host and shows one active endpoint per enabled controller.
 
 The main window shows:
 
@@ -44,8 +44,10 @@ The Settings window can disable specific Libera controller types from
 discovery. Disabled types are not constructed, so their discovery sockets,
 USB scans, plugin backends, and background threads are not started.
 
-Already-IDN Helios network controllers are skipped automatically because they
-already expose the protocol Libera Link would provide for them.
+The IDN controller manager is disabled by default because already-IDN Helios
+network controllers expose the same protocol that Libera Link would provide for
+them. Use the CLI or settings UI to enable it when you explicitly want to scan
+IDN controllers as physical outputs.
 
 ## Virtual Controllers
 
@@ -53,12 +55,45 @@ A virtual controller is the software-facing side of Libera Link. Its host
 presents linked Libera controllers as something another laser-control program
 can talk to.
 
-The built-in virtual controller is:
+The app currently exposes these built-in virtual controller hosts:
 
-- `idn`: exposes linked controllers as IDN services.
+- `idn`: exposes linked controllers as IDN services. This is the default.
+- `libera`: exposes linked controllers through the Libera protocol with UDP
+  discovery advertisements and TCP sessions.
 
-More virtual controller hosts can be added in code. See
-[Writing a virtual controller host](docs/virtual-controller-hosts.md).
+An Ether Dream virtual-controller host implementation also exists in-tree for
+tests and future UI work, but the app currently loads the `idn` and `libera`
+host registrations.
+
+More virtual controller hosts can be added in code. See [Writing a virtual
+controller host](docs/virtual-controller-hosts.md).
+
+## Building From Source
+
+Clone submodules before configuring:
+
+```bash
+git submodule update --init --recursive
+```
+
+Preferred local build:
+
+```bash
+cmake --preset release
+cmake --build --preset release --parallel
+```
+
+Useful presets:
+
+- `release`: macOS or other Ninja release build, with the GUI enabled.
+- `debug`: macOS or other Ninja debug build, with the GUI enabled.
+- `linux-release`: Linux release build using the system libusb package.
+- `win-release`: Windows Visual Studio 2022 release build.
+- `win-debug`: Windows Visual Studio 2022 debug build.
+
+The GUI target fetches pinned GLFW and Dear ImGui sources through CMake
+FetchContent unless `LIBERA_LINK_GUI_GLFW_SOURCE_DIR` and
+`LIBERA_LINK_GUI_IMGUI_SOURCE_DIR` point at existing source trees.
 
 ## Command Line
 
@@ -69,6 +104,12 @@ runtime:
 ./build/libera_link --virtual-controller idn --discovery-timeout-ms 8000 --max-dacs 4
 ```
 
+Libera protocol example:
+
+```bash
+./build/libera_link --virtual-controller libera --virtual-controller-opt tcp_port=18000
+```
+
 Useful options:
 
 - `--virtual-controller <id>` selects the virtual controller to expose.
@@ -77,10 +118,14 @@ Useful options:
 - `--max-dacs <count>` limits how many discovered controllers are linked.
 - `--disable-controller-type <type>` prevents a Libera controller manager type
   from being constructed or discovered.
+- `--enable-controller-type <type>` re-enables a default-disabled controller
+  manager type.
 - `--latency-ms <ms>` sets the starting target buffer latency.
+- `--max-latency-ms <ms>` sets the upper limit for automatic latency increases.
 - `--no-auto-latency` disables automatic latency increases after underruns.
 
-Run `./build/libera_link --help` for the full list.
+Run `./build/libera_link --help` for the full list of options, virtual
+controller hosts, and available controller manager types.
 
 ## Safety
 

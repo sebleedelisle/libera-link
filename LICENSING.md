@@ -20,8 +20,16 @@ Important examples in this repository:
   `extern/libera-laser/LICENSE`
 - `src/third_party/openidn/`:
   `src/third_party/openidn/LICENSE.openidn.md`
-- Vendored or generated files that carry their own upstream notices, including
-  parts of `src/fonts/` and `src/third_party/openidn/`
+- `src/fonts/RobotoMedium.cpp` and `src/fonts/RobotoBold.cpp`:
+  generated compressed C arrays from Roboto TTF files. Roboto is an upstream
+  Google font distributed under the Apache License 2.0.
+- `src/fonts/ForkAwesome.cpp` and `src/fonts/IconsForkAwesome.h`:
+  generated from Fork Awesome font/icon metadata. Fork Awesome font files are
+  distributed under the SIL Open Font License 1.1; other Fork Awesome project
+  files carry their upstream licenses.
 
 If a file or directory includes its own license text or upstream copyright
 notice, follow that more specific notice for that material.
+
+When redistributing generated font blobs, keep the corresponding upstream
+license and attribution information with the source or release artifact.
