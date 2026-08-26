@@ -64,6 +64,13 @@ Set these repository variables for Windows signing:
 GitHub Release creation uses `softprops/action-gh-release` and the job grants
 `contents: write` to the default `GITHUB_TOKEN`.
 
+The GitHub Release name and body include a licence-server build identity in the
+form `vX.Y.Z-<channel>.<build>`. For a plain `vX.Y.Z` tag, the workflow creates
+`vX.Y.Z-public.<GITHUB_RUN_NUMBER>`. Tags may also specify a channel, for
+example `v0.1.0-beta`, `v0.1.0-rc`, or `v0.1.0-private`. The build number uses
+the GitHub Actions run number unless the tag already includes a full identity
+such as `v0.1.0-beta.123`.
+
 ## Packaging Notes
 
 - macOS imports `APPLE_CERTIFICATE_P12` into a temporary keychain, signs the
@@ -89,11 +96,19 @@ git push origin v0.1.0
 4. Wait for the tagged `Build` workflow to complete.
 5. Verify the GitHub Release contains:
    `libera-link-macos.dmg`, `libera-link-linux.AppImage`, `libera-link-windows.zip`
+6. Verify the GitHub Release title or body contains the server identity, for
+   example `v0.1.0-public.123`.
+7. After the licence server webhook imports the release, review `/admin/releases`
+   and publish the `LNK01` release when the version, build, access level,
+   macOS/Windows artifacts, and sync error are correct.
 
 ## Notes
 
 - App versioning comes from `git describe --tags --abbrev=0`. If no matching
   tag is available, the version falls back to `0.0.0`.
+- The licence server currently imports `libera-link-macos.dmg` and
+  `libera-link-windows.zip` for app code `LNK01`; Linux is still built and
+  attached to GitHub Releases but is not imported by the server yet.
 - The workflow uses `fetch-depth: 0` so tags are available during CI.
 - Pull requests do not receive signing secrets, so signing, notarization, and
   release packaging only run for non-PR events.

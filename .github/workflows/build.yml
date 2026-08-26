@@ -323,9 +323,53 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v7
 
+      - name: Prepare release identity
+        id: release_identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          build="${GITHUB_RUN_NUMBER}"
+
+          if [[ "$tag" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-(public|release|beta|alpha|rc|private)\.([1-9][0-9]*)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+            channel="${BASH_REMATCH[2],,}"
+            build="${BASH_REMATCH[3]}"
+          elif [[ "$tag" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-(public|release|beta|alpha|rc|private)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+            channel="${BASH_REMATCH[2],,}"
+          elif [[ "$tag" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+            channel="public"
+          else
+            echo "Unsupported release tag '$tag'. Use vX.Y.Z, vX.Y.Z-public, vX.Y.Z-beta, vX.Y.Z-alpha, vX.Y.Z-rc, or vX.Y.Z-private." >&2
+            exit 1
+          fi
+
+          identity="v${version}-${channel}.${build}"
+          prerelease="true"
+          if [[ "$channel" == "public" || "$channel" == "release" ]]; then
+            prerelease="false"
+          fi
+
+          {
+            echo "identity=${identity}"
+            echo "version=${version}"
+            echo "channel=${channel}"
+            echo "build=${build}"
+            echo "prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
+          name: ${{ steps.release_identity.outputs.identity }}
+          body: |
+            Build identity: ${{ steps.release_identity.outputs.identity }}
+            App code: LNK01
+            App build: ${{ steps.release_identity.outputs.build }}
+          prerelease: ${{ steps.release_identity.outputs.prerelease }}
           files: |
             libera-link-macos/libera-link-macos.dmg
             libera-link-linux/libera-link-linux.AppImage
