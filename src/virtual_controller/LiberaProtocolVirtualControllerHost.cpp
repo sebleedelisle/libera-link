@@ -356,14 +356,15 @@ public:
         endpoint.targetId = info.id;
         endpoint.label = targetDisplayName(info, index_);
         endpoint.value = options_.advertisedAddress.empty()
-            ? std::to_string(tcpPort_)
+            ? "UDP source address, port " + std::to_string(tcpPort_)
             : options_.advertisedAddress + ":" + std::to_string(tcpPort_);
         endpoint.kind = "virtual-dac";
         endpoint.protocol = "libera";
         endpoint.transport = "tcp";
-        endpoint.address = options_.advertisedAddress.empty()
-            ? options_.listenAddress
-            : options_.advertisedAddress;
+        // An empty advertised address tells clients to use the source address
+        // of the discovery packet. Do not expose the 0.0.0.0 bind wildcard as
+        // though it were a remotely reachable endpoint.
+        endpoint.address = options_.advertisedAddress;
         endpoint.port = tcpPort_;
         endpoint.channels = options_.maxUserChannels;
         endpoint.attributes["stream_modes"] = "raw,frame-by-count";

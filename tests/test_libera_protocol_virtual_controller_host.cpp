@@ -213,6 +213,7 @@ int main() {
     const auto endpoints = host.endpoints();
     ASSERT_EQ(endpoints.size(), 1, "one endpoint");
     ASSERT_TRUE(endpoints[0].label == "LL - Protocol test target", "endpoint label is prefixed");
+    ASSERT_TRUE(endpoints[0].address == "127.0.0.1", "explicit advertised address is reported");
     ASSERT_TRUE(endpoints[0].attributes.at("availability") == "available",
                 "endpoint starts available");
 
@@ -311,6 +312,22 @@ int main() {
     ASSERT_TRUE(frame[2].b > 0.99f, "third point blue");
 
     host.stop();
+
+    vc::VirtualControllerHostConfig automaticAddressConfig;
+    automaticAddressConfig.options["listen_address"] = "0.0.0.0";
+    automaticAddressConfig.options["tcp_port"] = std::to_string(freeTcpPort());
+    automaticAddressConfig.options["discovery"] = "false";
+    vc::LiberaProtocolVirtualControllerHost automaticAddressHost(automaticAddressConfig);
+    ASSERT_TRUE(automaticAddressHost.start(context, error), error.c_str());
+    const auto automaticAddressEndpoints = automaticAddressHost.endpoints();
+    ASSERT_EQ(automaticAddressEndpoints.size(), 1, "one automatic-address endpoint");
+    ASSERT_TRUE(automaticAddressEndpoints[0].address.empty(),
+                "wildcard bind is not reported as a reachable address");
+    ASSERT_TRUE(automaticAddressEndpoints[0].value.find("UDP source address") !=
+                    std::string::npos,
+                "automatic address explains discovery-source behavior");
+    automaticAddressHost.stop();
+
     if (g_failures == 0) {
         std::printf("Libera Protocol virtual controller host tests passed.\n");
     }

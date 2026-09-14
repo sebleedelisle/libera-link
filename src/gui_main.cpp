@@ -1024,19 +1024,16 @@ int runGuiApplication() {
                     configuredVirtualControllerHostIdForController(controller.id);
                 const auto configuredControllerHostIt =
                     virtualControllerHostInfoForId(configuredControllerHostId);
-                const std::string hostLabel = endpoint && !endpoint->virtualControllerHostDisplayName.empty()
+                const std::string hostProtocolLabel =
+                    endpoint && !endpoint->virtualControllerHostDisplayName.empty()
                     ? endpoint->virtualControllerHostDisplayName
                     : configuredVirtualControllerNameForController(controller.id);
-                std::string hostSecondaryLabel;
-                if (endpoint && !endpoint->virtualControllerEndpointLabel.empty() &&
-                    endpoint->virtualControllerEndpointLabel != hostLabel) {
-                    hostSecondaryLabel = endpoint->virtualControllerEndpointLabel;
-                } else if (endpoint && !endpoint->virtualControllerEndpointAddress.empty() &&
-                           endpoint->virtualControllerEndpointPort > 0) {
-                    hostSecondaryLabel =
-                        endpoint->virtualControllerEndpointAddress + ":" +
-                        std::to_string(endpoint->virtualControllerEndpointPort);
-                }
+                // Lead with the DAC identity presented to sender applications;
+                // the smaller second line identifies its output protocol.
+                const std::string hostDacLabel =
+                    endpoint && !endpoint->virtualControllerEndpointLabel.empty()
+                    ? endpoint->virtualControllerEndpointLabel
+                    : controller.label;
 
                 std::string endpointAddressLabel;
                 if (endpoint) {
@@ -1067,7 +1064,8 @@ int runGuiApplication() {
 
                 auto drawVirtualControllerTooltip = [&]() {
                     ImGui::BeginTooltip();
-                    ImGui::Text("%s", hostLabel.c_str());
+                    ImGui::Text("%s", hostDacLabel.c_str());
+                    ImGui::TextDisabled("Protocol: %s", hostProtocolLabel.c_str());
                     if (configuredControllerHostIt != availableVirtualControllerHosts.end()) {
                         ImGui::TextDisabled("ID: %s", configuredControllerHostIt->id.c_str());
                     } else if (!configuredControllerHostId.empty()) {
@@ -1152,7 +1150,7 @@ int runGuiApplication() {
                 drawLinkNode(drawList,
                              hostMin,
                              hostMax,
-                             hostLabel,
+                             hostDacLabel,
                              hostFill,
                              (hostSelectorHovered && !hostSelectorDisabled)
                                  ? IM_COL32(128, 181, 222, 230)
@@ -1160,7 +1158,7 @@ int runGuiApplication() {
                              textColor,
                              hostLight,
                              hostOnline,
-                             hostSecondaryLabel,
+                             hostProtocolLabel,
                              secondaryTextColor,
                              true);
                 drawPowerButton(drawList,
