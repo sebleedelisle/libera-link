@@ -277,9 +277,13 @@ if(LIBERA_LINK_BUILD_GUI)
         src/fonts/RobotoBold.cpp
         src/fonts/ForkAwesome.cpp
     )
-    set_target_properties(libera_link_gui PROPERTIES
-        OUTPUT_NAME "${LIBERA_LINK_APP_BUNDLE_NAME}"
-    )
+    if(UNIX AND NOT APPLE)
+      set_target_properties(libera_link_gui PROPERTIES OUTPUT_NAME "libera-link")
+    else()
+      set_target_properties(libera_link_gui PROPERTIES
+          OUTPUT_NAME "${LIBERA_LINK_APP_BUNDLE_NAME}"
+      )
+    endif()
     if(APPLE)
       set(LIBERA_LINK_MACOS_BUNDLE_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-link.icns")
       set_source_files_properties("${LIBERA_LINK_MACOS_BUNDLE_ICON}" PROPERTIES

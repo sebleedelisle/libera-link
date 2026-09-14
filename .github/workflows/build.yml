@@ -29,7 +29,7 @@ jobs:
             preset: linux-release
             artifact: libera-link-linux
             pr_artifact_paths: |
-              build/Libera Link
+              build/libera-link
               build/libera-link-cli
             package_path: libera-link-linux.AppImage
           - os: windows-2022
@@ -261,7 +261,7 @@ jobs:
           Type=Application
           Name=Libera Link
           Comment=OpenIDN bridge for Libera-compatible laser controllers
-          Exec="Libera Link"
+          Exec=libera-link
           Icon=libera-link
           Categories=Graphics;AudioVideo;
           Terminal=false
@@ -272,7 +272,7 @@ jobs:
           export APPIMAGE_EXTRACT_AND_RUN=1
 
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
-            --executable "build/Libera Link" \
+            --executable build/libera-link \
             --desktop-file libera-link.desktop \
             --icon-file libera-link.png
 
