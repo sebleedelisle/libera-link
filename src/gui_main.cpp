@@ -21,6 +21,14 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -488,7 +496,7 @@ void drawVirtualWire(ImDrawList* drawList,
 }
 } // namespace
 
-int main() {
+int runGuiApplication() {
     LiberaApp app;
     if (!app.init({"Libera Link", 505, 900, -1, -1})) {
         return 1;
@@ -1408,3 +1416,13 @@ int main() {
     app.shutdown();
     return 0;
 }
+
+#if defined(_WIN32)
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    return runGuiApplication();
+}
+#else
+int main() {
+    return runGuiApplication();
+}
+#endif

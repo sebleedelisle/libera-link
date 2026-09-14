@@ -20,7 +20,7 @@ Non-PR builds package:
 
 - macOS: signed and notarized `.dmg`
 - Linux: `.AppImage`
-- Windows: signed `.zip`
+- Windows: signed installer and portable `.zip`
 
 Pull requests upload unsigned CI artifacts instead of packaged release files.
 No controller plugins are bundled in the release artifacts.
@@ -79,8 +79,9 @@ such as `v0.1.0-beta.123`.
 - Linux installs build dependencies from `apt`, creates a desktop file and icon,
   then uses `linuxdeploy-x86_64.AppImage`.
 - Windows downloads libusb `1.0.30`, stages the VS2022 x64 DLL/import library,
-  signs `.exe` files with Azure Trusted Signing, and packages the executable
-  pair with `libusb-1.0.dll`.
+  signs the application executables with Azure Trusted Signing, and packages
+  the executable pair with `libusb-1.0.dll`. It also builds and signs an Inno
+  Setup installer which installs the Visual C++ x64 runtime when required.
 
 ## Release Process
 
@@ -94,8 +95,9 @@ git push origin v0.1.0
 ```
 
 4. Wait for the tagged `Build` workflow to complete.
-5. Verify the GitHub Release contains:
-   `libera-link-macos.dmg`, `libera-link-linux.AppImage`, `libera-link-windows.zip`
+5. Verify the GitHub Release contains: `libera-link-macos.dmg`,
+   `libera-link-linux.AppImage`, `libera-link-windows-setup.exe`, and
+   `libera-link-windows.zip`.
 6. Verify the GitHub Release title or body contains the server identity, for
    example `v0.1.0-public.123`.
 7. After the licence server webhook imports the release, review `/admin/releases`

@@ -200,7 +200,7 @@ Once the object file is linked into `libera_link_core`, the virtual controller
 host appears in the GUI selector and can be selected from the CLI:
 
 ```bash
-./build/libera_link --virtual-controller my-controller
+./build/libera-link-cli --virtual-controller my-controller
 ```
 
 When a host registration lives in a static library, make sure the object file is

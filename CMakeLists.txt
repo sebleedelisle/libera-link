@@ -134,6 +134,7 @@ function(libera_link_copy_libusb_runtime target_name)
 endfunction()
 
 add_executable(libera_link src/main.cpp)
+set_target_properties(libera_link PROPERTIES OUTPUT_NAME "libera-link-cli")
 target_link_libraries(libera_link PRIVATE libera_link_core)
 libera_link_copy_libusb_runtime(libera_link)
 
@@ -266,7 +267,7 @@ if(LIBERA_LINK_BUILD_GUI)
       libera_add_imgui_plugin_ui(libera-plugin-ui-imgui libera_link_imgui)
     endif()
 
-    add_executable(libera_link_gui
+    add_executable(libera_link_gui WIN32
         src/gui_main.cpp
         src/LiberaApp.cpp
         src/LiberaPluginsWindow.cpp
@@ -275,6 +276,9 @@ if(LIBERA_LINK_BUILD_GUI)
         src/fonts/RobotoMedium.cpp
         src/fonts/RobotoBold.cpp
         src/fonts/ForkAwesome.cpp
+    )
+    set_target_properties(libera_link_gui PROPERTIES
+        OUTPUT_NAME "${LIBERA_LINK_APP_BUNDLE_NAME}"
     )
     if(APPLE)
       set(LIBERA_LINK_MACOS_BUNDLE_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-link.icns")
@@ -306,7 +310,6 @@ if(LIBERA_LINK_BUILD_GUI)
     if(APPLE)
       set_target_properties(libera_link_gui PROPERTIES
           MACOSX_BUNDLE TRUE
-          OUTPUT_NAME "${LIBERA_LINK_APP_BUNDLE_NAME}"
           MACOSX_BUNDLE_BUNDLE_NAME "${LIBERA_LINK_APP_BUNDLE_NAME}"
           MACOSX_BUNDLE_GUI_IDENTIFIER "com.sebleedelisle.libera-link"
           MACOSX_BUNDLE_BUNDLE_VERSION "${LIBERA_LINK_APP_VERSION}"

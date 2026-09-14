@@ -23,22 +23,24 @@ jobs:
             artifact: libera-link-macos
             pr_artifact_paths: |
               build/Libera Link.app
-              build/libera_link
+              build/libera-link-cli
             package_path: libera-link-macos.dmg
           - os: ubuntu-latest
             preset: linux-release
             artifact: libera-link-linux
             pr_artifact_paths: |
-              build/libera_link_gui
-              build/libera_link
+              build/Libera Link
+              build/libera-link-cli
             package_path: libera-link-linux.AppImage
           - os: windows-2022
             preset: win-release
             artifact: libera-link-windows
             pr_artifact_paths: |
-              build/Release/libera_link_gui.exe
-              build/Release/libera_link.exe
-            package_path: libera-link-windows.zip
+              build/Release/Libera Link.exe
+              build/Release/libera-link-cli.exe
+            package_path: |
+              libera-link-windows-setup.exe
+              libera-link-windows.zip
 
     runs-on: ${{ matrix.os }}
     env:
@@ -259,7 +261,7 @@ jobs:
           Type=Application
           Name=Libera Link
           Comment=OpenIDN bridge for Libera-compatible laser controllers
-          Exec=libera_link_gui
+          Exec="Libera Link"
           Icon=libera-link
           Categories=Graphics;AudioVideo;
           Terminal=false
@@ -270,7 +272,7 @@ jobs:
           export APPIMAGE_EXTRACT_AND_RUN=1
 
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
-            --executable build/libera_link_gui \
+            --executable "build/Libera Link" \
             --desktop-file libera-link.desktop \
             --icon-file libera-link.png
 
@@ -282,8 +284,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p staging/libera-link
-          cp build/Release/libera_link_gui.exe staging/libera-link/
-          cp build/Release/libera_link.exe staging/libera-link/
+          cp "build/Release/Libera Link.exe" staging/libera-link/
+          cp build/Release/libera-link-cli.exe staging/libera-link/
           LIBUSB_DLL_DIR="build/libusb-msvc/libusb_bin/Windows/x64/Release/dll"
           if [ ! -f "${LIBUSB_DLL_DIR}/libusb-1.0.dll" ]; then
             LIBUSB_DLL_DIR="extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/Windows/x64/Release/dll"
@@ -291,6 +293,80 @@ jobs:
           cp "${LIBUSB_DLL_DIR}/libusb-1.0.dll" staging/libera-link/
           cp "${LIBUSB_DLL_DIR}/libusb-1.0.pdb" staging/libera-link/ || true
           cd staging && 7z a ../libera-link-windows.zip libera-link
+
+      - name: Install Inno Setup (Windows)
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $compilerCandidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $compiler = $compilerCandidates |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+          if (-not $compiler) {
+            throw 'Inno Setup compiler not found after installation.'
+          }
+
+          $versionSource = $env:GITHUB_REF_NAME
+          if ($versionSource -notmatch '^v?([0-9]+\.[0-9]+\.[0-9]+)') {
+            $versionSource = & git describe --tags --abbrev=0 2>$null
+          }
+          if ($versionSource -match '^v?([0-9]+\.[0-9]+\.[0-9]+)') {
+            $version = $Matches[1]
+          } else {
+            $version = '0.0.0'
+          }
+
+          $vcRedistPath = Join-Path $env:RUNNER_TEMP 'vc_redist.x64.exe'
+          Invoke-WebRequest `
+            -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' `
+            -OutFile $vcRedistPath
+
+          $sourceDir = (Resolve-Path 'staging\libera-link').Path
+          $outputDir = (Resolve-Path '.').Path
+          $setupIcon = (Resolve-Path 'icons\libera-link.ico').Path
+          $installerScript = (Resolve-Path 'cmake\LiberaLinkInstaller.iss').Path
+
+          & $compiler `
+            "/DMyAppVersion=$version" `
+            "/DMyAppBuildNumber=$env:GITHUB_RUN_NUMBER" `
+            "/DMyAppSourceDir=$sourceDir" `
+            "/DMyVcRedistPath=$vcRedistPath" `
+            "/DMyOutputDir=$outputDir" `
+            "/DMySetupIconFile=$setupIcon" `
+            $installerScript
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup compilation failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path 'libera-link-windows-setup.exe')) {
+            throw 'Installer was not created.'
+          }
+
+      - name: Sign installer (Windows)
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE_NAME }}
+          cache-dependencies: false
+          files-folder: ${{ github.workspace }}
+          files-folder-filter: libera-link-windows-setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Upload PR build artifact
         if: github.event_name == 'pull_request'
@@ -373,5 +449,6 @@ jobs:
           files: |
             libera-link-macos/libera-link-macos.dmg
             libera-link-linux/libera-link-linux.AppImage
+            libera-link-windows/libera-link-windows-setup.exe
             libera-link-windows/libera-link-windows.zip
           generate_release_notes: true

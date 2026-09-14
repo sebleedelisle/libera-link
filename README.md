@@ -101,13 +101,13 @@ The GUI is the normal way to use Libera Link, but the CLI can run the same link
 runtime:
 
 ```bash
-./build/libera_link --virtual-controller idn --discovery-timeout-ms 8000 --max-dacs 4
+./build/libera-link-cli --virtual-controller idn --discovery-timeout-ms 8000 --max-dacs 4
 ```
 
 Libera protocol example:
 
 ```bash
-./build/libera_link --virtual-controller libera --virtual-controller-opt tcp_port=18000
+./build/libera-link-cli --virtual-controller libera --virtual-controller-opt tcp_port=18000
 ```
 
 Useful options:
@@ -124,7 +124,7 @@ Useful options:
 - `--max-latency-ms <ms>` sets the upper limit for automatic latency increases.
 - `--no-auto-latency` disables automatic latency increases after underruns.
 
-Run `./build/libera_link --help` for the full list of options, virtual
+Run `./build/libera-link-cli --help` for the full list of options, virtual
 controller hosts, and available controller manager types.
 
 ## Safety
