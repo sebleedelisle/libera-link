@@ -3,6 +3,8 @@
 #include "LiberaPaths.hpp"
 #include "LiberaPluginsWindow.h"
 #include "libera/System.hpp"
+#include "libera/gui/imgui/PluginManagementPanel.hpp"
+#include "libera/plugin/PluginSettings.hpp"
 #include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
 #include "fonts/IconsForkAwesome.h"
@@ -528,6 +530,8 @@ int runGuiApplication() {
     bool showSettingsWindow = false;
     std::set<std::string> enabledControllers = loadEnabledControllers();
     std::unordered_map<std::string, std::string> controllerHostRoutes = loadControllerHostRoutes();
+    std::unordered_map<std::string, libera::gui::imgui::PluginPanelState>
+        controllerPluginSettingsStates;
 
     auto launchSelectedStart = [&](std::set<std::string> selectedIds) {
         if (selectedIds.empty()) {
@@ -1337,6 +1341,53 @@ int runGuiApplication() {
                     ImGui::SameLine();
                     ImGui::TextDisabled("(%s)", manager.type.c_str());
 
+                    ImGui::PopID();
+                }
+
+                bool hasPluginControllerSettings = false;
+                for (const auto& controller : snapshot.discovered) {
+                    const auto settings = libera::plugin::controllerSettings(
+                        controller.type,
+                        controller.id);
+                    if (settings.empty()) {
+                        continue;
+                    }
+
+                    if (!hasPluginControllerSettings) {
+                        ImGui::Separator();
+                        ImGui::Spacing();
+                        drawSectionTitle(app, "Plugin Controller Settings");
+                        hasPluginControllerSettings = true;
+                    }
+
+                    const std::string settingsKey =
+                        controller.type + "\n" + controller.id;
+                    auto& settingsState =
+                        controllerPluginSettingsStates[settingsKey];
+
+                    ImGui::PushID(settingsKey.c_str());
+                    const std::string label = controller.label +
+                                              " (" + controller.type + ")";
+                    if (ImGui::TreeNodeEx(label.c_str(),
+                                          ImGuiTreeNodeFlags_SpanAvailWidth)) {
+                        libera::gui::imgui::DrawPluginControllerSettings(
+                            controller.type,
+                            controller.id,
+                            settingsState);
+
+                        // Keep validation and plugin errors beside the setting
+                        // that produced them so they are immediately actionable.
+                        if (!settingsState.lastMessage.empty()) {
+                            const ImVec4 messageColor =
+                                settingsState.lastMessageIsError
+                                    ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f)
+                                    : ImVec4(0.35f, 0.8f, 0.45f, 1.0f);
+                            ImGui::TextColored(messageColor,
+                                               "%s",
+                                               settingsState.lastMessage.c_str());
+                        }
+                        ImGui::TreePop();
+                    }
                     ImGui::PopID();
                 }
 
