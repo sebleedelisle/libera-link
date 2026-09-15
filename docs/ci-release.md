@@ -102,15 +102,19 @@ git push origin v0.1.0
    example `v0.1.0-public.123`.
 7. After the licence server webhook imports the release, review `/admin/releases`
    and publish the `LNK01` release when the version, build, access level,
-   macOS/Windows artifacts, and sync error are correct.
+   platform artifacts (including the Windows installer), and sync error are
+   correct.
 
 ## Notes
 
 - App versioning comes from `git describe --tags --abbrev=0`. If no matching
   tag is available, the version falls back to `0.0.0`.
-- The licence server currently imports `libera-link-macos.dmg` and
-  `libera-link-windows.zip` for app code `LNK01`; Linux is still built and
-  attached to GitHub Releases but is not imported by the server yet.
+- The licence server imports `libera-link-macos.dmg`,
+  `libera-link-windows-setup.exe`, and `libera-link-linux.AppImage` for app code
+  `LNK01`. The portable `libera-link-windows.zip` remains available on GitHub
+  Releases. The Windows asset pattern is configured in the licence server's
+  `js/app-config.js`; after deploying a pattern change, redeliver the release
+  webhook to update existing imported artifacts.
 - The workflow uses `fetch-depth: 0` so tags are available during CI.
 - Pull requests do not receive signing secrets, so signing, notarization, and
   release packaging only run for non-PR events.

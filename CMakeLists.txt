@@ -15,6 +15,7 @@ else()
 endif()
 
 project(LiberaLink VERSION ${PROJECT_VERSION_FROM_GIT} LANGUAGES CXX)
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -104,6 +105,7 @@ add_library(libera_link_core STATIC
     src/virtual_controller/LiberaProtocolVirtualControllerHost.cpp
     src/virtual_controller/VirtualControllerHostRegistry.cpp
     src/LiberaPaths.cpp
+    src/AvbSettings.cpp
 )
 target_include_directories(libera_link_core
     PUBLIC
@@ -139,6 +141,20 @@ target_link_libraries(libera_link PRIVATE libera_link_core)
 libera_link_copy_libusb_runtime(libera_link)
 
 option(LIBERA_LINK_BUILD_HARDWARE_TESTS "Build hardware tests (requires Helios USB)" OFF)
+add_executable(test_avb_link tests/test_avb_link.cpp)
+target_link_libraries(test_avb_link PRIVATE libera_link_core)
+libera_link_copy_libusb_runtime(test_avb_link)
+
+add_executable(test_avb_backend_state
+    extern/libera-laser/tests/test_avb_backend_state.cpp)
+target_link_libraries(test_avb_backend_state PRIVATE libera-core)
+libera_link_copy_libusb_runtime(test_avb_backend_state)
+
+if(BUILD_TESTING)
+  add_test(NAME test_avb_link COMMAND test_avb_link)
+  add_test(NAME test_avb_backend_state COMMAND test_avb_backend_state)
+endif()
+
 add_executable(test_point_stream_framer
     extern/libera-laser/tests/test_point_stream_framer.cpp)
 target_link_libraries(test_point_stream_framer PRIVATE libera-core)
@@ -271,6 +287,7 @@ if(LIBERA_LINK_BUILD_GUI)
         src/gui_main.cpp
         src/LiberaApp.cpp
         src/LiberaPluginsWindow.cpp
+        src/LiberaAvbWindow.cpp
         $<$<PLATFORM_ID:Darwin>:${CMAKE_CURRENT_SOURCE_DIR}/src/LiberaFileDialog_macos.mm>
         $<$<NOT:$<PLATFORM_ID:Darwin>>:${CMAKE_CURRENT_SOURCE_DIR}/src/LiberaFileDialog_other.cpp>
         src/fonts/RobotoMedium.cpp

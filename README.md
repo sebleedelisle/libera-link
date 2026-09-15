@@ -44,6 +44,17 @@ The Settings window can disable specific Libera controller types from
 discovery. Disabled types are not constructed, so their discovery sockets,
 USB scans, plugin backends, and background threads are not started.
 
+Open **Settings > AVB Setup** to select an AVB/audio interface with at least
+eight output channels. Each eight-channel bank becomes a linkable controller.
+Choose the interface's point rate and, where needed by an AVB-to-ILDA adapter,
+enable **Half X/Y Output** for individual banks. All banks share the interface's
+point rate; the sender should use that same rate. Turn off linked AVB
+controllers before changing their setup.
+
+AVB interfaces, point rates, and Half X/Y settings are saved in
+`avb-settings.txt` in Libera Link's settings directory and restored by both the
+GUI and CLI. Disconnected interfaces keep their settings for reconnection.
+
 The IDN controller manager is disabled by default because already-IDN Helios
 network controllers expose the same protocol that Libera Link would provide for
 them. Use the CLI or settings UI to enable it when you explicitly want to scan

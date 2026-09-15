@@ -2,6 +2,8 @@
 #include "LiberaApp.h"
 #include "LiberaPaths.hpp"
 #include "LiberaPluginsWindow.h"
+#include "LiberaAvbWindow.h"
+#include "AvbSettings.hpp"
 #include "libera/System.hpp"
 #include "libera/gui/imgui/PluginManagementPanel.hpp"
 #include "libera/plugin/PluginSettings.hpp"
@@ -500,10 +502,12 @@ void drawVirtualWire(ImDrawList* drawList,
 
 int runGuiApplication() {
     LiberaApp app;
-    if (!app.init({"Libera Link", 505, 900, -1, -1})) {
+    if (!app.init({"Libera Link", 800, 900, -1, -1})) {
         return 1;
     }
 
+    libera::ui::AvbWindowState avbWindowState;
+    libera_link::loadAvbSettings(libera_link::avbSettingsPath(), avbWindowState.lastError);
     libera_link::LinkRuntime runtime;
     libera_link::LinkOptions linkOptions;
     if (const auto defaultVirtualControllerHost = libera_link::virtual_controller::defaultVirtualControllerHost()) {
@@ -528,6 +532,7 @@ int runGuiApplication() {
     bool showLogsWindow = false;
     bool showPluginsWindow = false;
     bool showSettingsWindow = false;
+    bool showAvbWindow = false;
     std::set<std::string> enabledControllers = loadEnabledControllers();
     std::unordered_map<std::string, std::string> controllerHostRoutes = loadControllerHostRoutes();
     std::unordered_map<std::string, libera::gui::imgui::PluginPanelState>
@@ -1275,6 +1280,10 @@ int runGuiApplication() {
                 if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
                     showPluginsWindow = true;
                 }
+                ImGui::SameLine();
+                if (ImGui::Button("AVB Setup", ImVec2(140.0f, 0.0f))) {
+                    showAvbWindow = true;
+                }
 
                 ImGui::Separator();
                 ImGui::Spacing();
@@ -1418,6 +1427,16 @@ int runGuiApplication() {
                 ImGui::EndChild();
             }
             ImGui::End();
+        }
+
+        // Do not reopen an AVB audio stream while a scan/start/stop task or
+        // a linked AVB controller can still be using that stream.
+        const bool avbSettingsLocked = scanInFlight || startInFlight || stopInFlight ||
+            rescanInFlight || std::any_of(snapshot.endpoints.begin(), snapshot.endpoints.end(),
+                [](const auto& endpoint) { return endpoint.type == "AVB"; });
+        if (libera::ui::DrawAvbWindow(&showAvbWindow, avbWindowState, avbSettingsLocked,
+                disabledControllerTypes.count("AVB") == 0)) {
+            requestDiscoverySettingsSync();
         }
 
         const auto targetControllerIds = selectedLinkableIds();

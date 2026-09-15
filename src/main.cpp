@@ -1,8 +1,10 @@
 #include "LinkRuntime.hpp"
+#include "AvbSettings.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <iostream>
 #include <thread>
 
 namespace {
@@ -28,6 +30,10 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
+    std::string avbError;
+    if (!libera_link::loadAvbSettings(libera_link::avbSettingsPath(), avbError)) {
+        std::cerr << avbError << '\n';
+    }
     libera_link::LinkRuntime runtime;
     runtime.setEchoLogsToStdStreams(true);
     if (!runtime.start(options)) {

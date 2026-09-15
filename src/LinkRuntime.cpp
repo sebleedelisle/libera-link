@@ -6,6 +6,7 @@
 
 #include "libera/System.hpp"
 #include "libera/core/LaserController.hpp"
+#include "libera/avb/AvbManager.hpp"
 #include "libera/etherdream/EtherDreamManager.hpp"
 #include "libera/helios/HeliosControllerInfo.hpp"
 #include "libera/helios/HeliosManager.hpp"
@@ -441,7 +442,11 @@ public:
         , maxLatencyMs_(std::max(maxLatencyMs, latencyMs))
         , autoLatency_(autoLatency)
         , logger_(std::move(logger)) {
-        const auto initialRate = std::min<std::uint32_t>(30000u, maxPointRateValue_);
+        // AVB runs at the audio interface's shared sample rate. It cannot
+        // follow controller-local rate commands like a USB or network DAC.
+        const auto initialRate = info_.type == "AVB"
+            ? controller_->getPointRate()
+            : std::min<std::uint32_t>(30000u, maxPointRateValue_);
         const auto startingRate = std::max<std::uint32_t>(initialRate, 1000u);
         currentPointRate_.store(startingRate, std::memory_order_relaxed);
         commandedInputPps_.store(startingRate, std::memory_order_relaxed);
@@ -1308,7 +1313,10 @@ private:
             return;
         }
         controller_->setPointRate(proposed);
-        currentPointRate_.store(proposed, std::memory_order_relaxed);
+        // Use the actual hardware rate for buffering and output statistics;
+        // AVB deliberately ignores local rate changes to protect sibling banks.
+        const auto actualRate = info_.type == "AVB" ? controller_->getPointRate() : proposed;
+        currentPointRate_.store(actualRate, std::memory_order_relaxed);
     }
 
     std::shared_ptr<libera::core::LaserController> controller_;
