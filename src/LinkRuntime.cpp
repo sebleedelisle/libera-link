@@ -22,9 +22,11 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <ctime>
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -49,6 +51,7 @@ using libera::core::PointFillRequest;
 using namespace std::chrono_literals;
 
 constexpr double scannerSyncUnitNanoseconds = 100000.0;
+constexpr auto safetyFrameHoldTimeout = 2000ms;
 
 std::optional<std::string> readEnvVar(const char* name) {
 #if defined(_MSC_VER)
@@ -247,6 +250,21 @@ void tracePointVector(std::string_view label,
 
 class RuntimeLogger {
 public:
+    RuntimeLogger() {
+        const auto logDirectory = std::filesystem::path(settingsDirectory()) / "logs";
+        std::error_code ec;
+        std::filesystem::create_directories(logDirectory, ec);
+        persistentLogPath_ = logDirectory / "libera-link.log";
+        persistentBytes_ = std::filesystem::file_size(persistentLogPath_, ec);
+        if (ec) {
+            persistentBytes_ = 0;
+        }
+    }
+
+    std::string persistentLogPath() const {
+        return persistentLogPath_.string();
+    }
+
     void setEcho(bool enabled) {
         echo_.store(enabled, std::memory_order_relaxed);
     }
@@ -286,6 +304,7 @@ private:
             if (isError) {
                 lastError_ = line;
             }
+            appendPersistentLineLocked(isError, line);
         }
 
         if (!echo_.load(std::memory_order_relaxed)) {
@@ -299,11 +318,58 @@ private:
         }
     }
 
+    void appendPersistentLineLocked(bool isError, const std::string& line) {
+        const auto now = std::chrono::system_clock::now();
+        const auto time = std::chrono::system_clock::to_time_t(now);
+        std::tm localTime{};
+#ifdef _WIN32
+        localtime_s(&localTime, &time);
+#else
+        localtime_r(&time, &localTime);
+#endif
+        std::ostringstream formatted;
+        formatted << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S")
+                  << (isError ? " ERROR " : " INFO  ")
+                  << line << '\n';
+        const auto output = formatted.str();
+
+        if (persistentBytes_ + output.size() > maxPersistentBytes_) {
+            rotatePersistentLogsLocked();
+        }
+
+        std::ofstream file(persistentLogPath_, std::ios::app);
+        if (file) {
+            file << output;
+            persistentBytes_ += output.size();
+        }
+    }
+
+    void rotatePersistentLogsLocked() {
+        std::error_code ec;
+        const auto firstBackup = persistentLogPath_.string() + ".1";
+        const auto secondBackup = persistentLogPath_.string() + ".2";
+        std::filesystem::remove(secondBackup, ec);
+        ec.clear();
+        if (std::filesystem::exists(firstBackup, ec)) {
+            ec.clear();
+            std::filesystem::rename(firstBackup, secondBackup, ec);
+        }
+        ec.clear();
+        if (std::filesystem::exists(persistentLogPath_, ec)) {
+            ec.clear();
+            std::filesystem::rename(persistentLogPath_, firstBackup, ec);
+        }
+        persistentBytes_ = 0;
+    }
+
     static constexpr std::size_t maxLines_ = 250;
+    static constexpr std::uintmax_t maxPersistentBytes_ = 5u * 1024u * 1024u;
 
     mutable std::mutex mutex_;
     std::deque<std::string> lines_;
     std::string lastError_;
+    std::filesystem::path persistentLogPath_;
+    std::uintmax_t persistentBytes_ = 0;
     std::atomic<bool> echo_{false};
 };
 
@@ -1459,6 +1525,7 @@ DiscoveredControllerSnapshot makeDiscoveredControllerSnapshot(
     snapshot.label = info.labelValue();
     snapshot.id = info.idValue();
     snapshot.type = info.type();
+    snapshot.driverId = info.driverId();
     snapshot.maxPointRate = info.maxPointRate();
     snapshot.usage = usageStateLabel(info.usageState());
 
@@ -1642,6 +1709,7 @@ struct LinkRuntime::Impl {
     bool hasDiscoveryResults = false;
     std::size_t discoveredControllers = 0;
     std::vector<DiscoveredControllerSnapshot> discovered;
+    std::vector<std::unique_ptr<libera::core::ControllerInfo>> discoveredControllerInfos;
 
     std::unique_ptr<libera::System> liberaSystem;
     std::vector<ActiveVirtualControllerHost> virtualControllerHosts;
@@ -1650,6 +1718,7 @@ struct LinkRuntime::Impl {
     std::string activeVirtualControllerHostId;
     std::string activeVirtualControllerHostDisplayName;
     std::set<std::string> activeDisabledControllerTypes;
+    std::unordered_map<std::string, std::string> activeSelectedControllerDrivers;
     LinkOptions activeOptions;
 
     std::atomic<bool> stopRequested{false};
@@ -1662,18 +1731,23 @@ struct LinkRuntime::Impl {
     }
 
     void configureLiberaSystem(const LinkOptions& options) {
-        if (liberaSystem && activeDisabledControllerTypes == options.disabledControllerTypes) {
+        if (liberaSystem &&
+            activeDisabledControllerTypes == options.disabledControllerTypes &&
+            activeSelectedControllerDrivers == options.selectedControllerDrivers) {
             return;
         }
 
+        discoveredControllerInfos.clear();
         if (liberaSystem) {
             liberaSystem->shutdown();
         }
 
         libera::SystemOptions systemOptions;
         systemOptions.disabledControllerTypes = options.disabledControllerTypes;
+        systemOptions.selectedControllerDrivers = options.selectedControllerDrivers;
         liberaSystem = std::make_unique<libera::System>(std::move(systemOptions));
         activeDisabledControllerTypes = options.disabledControllerTypes;
+        activeSelectedControllerDrivers = options.selectedControllerDrivers;
     }
 };
 
@@ -1818,6 +1892,7 @@ LinkRuntime::LinkRuntime()
                 }
             }
         });
+    impl_->logger->info("Persistent log: " + impl_->logger->persistentLogPath());
 }
 
 LinkRuntime::~LinkRuntime() {
@@ -1846,10 +1921,12 @@ bool LinkRuntime::scan(const LinkOptions& options) {
     }
 
     impl_->logger->clear();
+    impl_->logger->info("Persistent log: " + impl_->logger->persistentLogPath());
     impl_->stopRequested.store(false, std::memory_order_relaxed);
     impl_->logger->info("Scanning for controllers via Libera");
 
     impl_->configureLiberaSystem(options);
+    impl_->discoveredControllerInfos.clear();
     auto* liberaSystem = impl_->liberaSystem.get();
     auto discovered =
         discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
@@ -1862,18 +1939,21 @@ bool LinkRuntime::scan(const LinkOptions& options) {
         return false;
     }
 
+    const std::size_t discoveredCount = discovered.size();
+    const bool foundControllers = discoveredCount > 0;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->hasDiscoveryResults = true;
         impl_->discoveredControllers = discoveredSnapshots.size();
         impl_->discovered = std::move(discoveredSnapshots);
+        impl_->discoveredControllerInfos = std::move(discovered);
         impl_->state = discoveryFailed ? RuntimeState::Failed : RuntimeState::Stopped;
-        impl_->statusMessage = discovered.empty()
+        impl_->statusMessage = !foundControllers
             ? (discoveryFailed ? "Controller discovery failed" : "No controllers found")
             : "Scan complete";
     }
 
-    if (discovered.empty()) {
+    if (!foundControllers) {
         if (!discoveryFailed) {
             impl_->logger->info("No controllers discovered via Libera.");
         }
@@ -1882,7 +1962,7 @@ bool LinkRuntime::scan(const LinkOptions& options) {
 
     {
         std::ostringstream oss;
-        oss << "Discovered " << discovered.size() << " controller(s) via Libera.";
+        oss << "Discovered " << discoveredCount << " controller(s) via Libera.";
         impl_->logger->info(oss.str());
     }
     return true;
@@ -1907,7 +1987,7 @@ bool LinkRuntime::start(const LinkOptions& options,
             return false;
         } else {
             impl_->state = RuntimeState::Starting;
-            impl_->statusMessage = "Discovering controllers...";
+            impl_->statusMessage = "Starting controllers...";
             impl_->activeVirtualControllerHostId.clear();
             impl_->activeVirtualControllerHostDisplayName.clear();
         }
@@ -1933,6 +2013,7 @@ bool LinkRuntime::start(const LinkOptions& options,
 
         const bool targetRuntimeOptionsChanged =
             activeOptions.disabledControllerTypes != options.disabledControllerTypes ||
+            activeOptions.selectedControllerDrivers != options.selectedControllerDrivers ||
             activeOptions.maxQueuedPoints != options.maxQueuedPoints ||
             activeOptions.latencyMs != options.latencyMs ||
             activeOptions.maxLatencyMs != options.maxLatencyMs ||
@@ -1954,17 +2035,7 @@ bool LinkRuntime::start(const LinkOptions& options,
 
         if (!missingControllerIds.empty()) {
             impl_->configureLiberaSystem(options);
-            auto discovered =
-                discoverControllers(*impl_->liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
-            auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
-            {
-                std::lock_guard<std::mutex> lock(impl_->mutex);
-                impl_->hasDiscoveryResults = true;
-                impl_->discoveredControllers = discoveredSnapshots.size();
-                impl_->discovered = std::move(discoveredSnapshots);
-            }
-
-            for (const auto& info : discovered) {
+            for (const auto& info : impl_->discoveredControllerInfos) {
                 if (!info || missingControllerIds.find(info->idValue()) == missingControllerIds.end()) {
                     continue;
                 }
@@ -2236,6 +2307,7 @@ bool LinkRuntime::start(const LinkOptions& options,
     }
 
     impl_->logger->clear();
+    impl_->logger->info("Persistent log: " + impl_->logger->persistentLogPath());
     if (ioTraceEnabled()) {
         {
             std::lock_guard<std::mutex> lock(ioTraceMutex());
@@ -2264,7 +2336,9 @@ bool LinkRuntime::start(const LinkOptions& options,
     }
 
     libera::core::LaserController::setTargetLatency(std::chrono::milliseconds(0));
-    libera::core::LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(0));
+    // A disconnected or wedged source must not leave a projector replaying its
+    // final frame forever. Active sources replace frames far more frequently.
+    libera::core::LaserController::setMaxFrameHoldTime(safetyFrameHoldTimeout);
 
     if (selectedControllerIds.empty()) {
         impl_->logger->info("Starting Libera Link");
@@ -2277,47 +2351,59 @@ bool LinkRuntime::start(const LinkOptions& options,
 
     impl_->configureLiberaSystem(options);
     auto* liberaSystem = impl_->liberaSystem.get();
-    auto discovered =
-        discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
-    auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
-    const bool discoveryFailed = !discovered.empty() ? false : !impl_->logger->lastError().empty();
+    if (impl_->discoveredControllerInfos.empty()) {
+        impl_->setState(RuntimeState::Starting, "Discovering controllers...");
+        auto discovered =
+            discoverControllers(*liberaSystem, options.discoveryTimeoutMs, impl_->stopRequested);
+        auto discoveredSnapshots = buildDiscoveredControllerSnapshots(discovered);
+        const bool discoveryFailed =
+            discovered.empty() && !impl_->logger->lastError().empty();
 
-    if (impl_->stopRequested.load(std::memory_order_relaxed)) {
-        impl_->setState(RuntimeState::Stopped, "Stopped");
-        impl_->logger->info("Link start cancelled.");
-        return false;
-    }
+        if (impl_->stopRequested.load(std::memory_order_relaxed)) {
+            impl_->setState(RuntimeState::Stopped, "Stopped");
+            impl_->logger->info("Link start cancelled.");
+            return false;
+        }
 
-    if (discovered.empty()) {
+        if (discovered.empty()) {
+            {
+                std::lock_guard<std::mutex> lock(impl_->mutex);
+                impl_->hasDiscoveryResults = true;
+                impl_->discoveredControllers = 0;
+                impl_->discovered.clear();
+            }
+            const std::string error = discoveryFailed
+                ? "Controller discovery failed."
+                : "No controllers discovered via Libera.";
+            impl_->setState(RuntimeState::Failed, error);
+            if (!discoveryFailed) {
+                impl_->logger->error(error);
+            }
+            return false;
+        }
+
+        const std::size_t discoveredCount = discovered.size();
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
             impl_->hasDiscoveryResults = true;
-            impl_->discoveredControllers = 0;
-            impl_->discovered.clear();
+            impl_->discoveredControllers = discoveredSnapshots.size();
+            impl_->discovered = std::move(discoveredSnapshots);
+            impl_->discoveredControllerInfos = std::move(discovered);
+            impl_->statusMessage = "Connecting controllers...";
         }
-        const std::string error = discoveryFailed
-            ? "Controller discovery failed."
-            : "No controllers discovered via Libera.";
-        impl_->setState(RuntimeState::Failed, error);
-        if (!discoveryFailed) {
-            impl_->logger->error(error);
-        }
-        return false;
-    }
 
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->hasDiscoveryResults = true;
-        impl_->discoveredControllers = discoveredSnapshots.size();
-        impl_->discovered = std::move(discoveredSnapshots);
-        impl_->statusMessage = "Connecting controllers...";
-    }
-
-    {
         std::ostringstream oss;
-        oss << "Discovered " << discovered.size() << " controller(s) via Libera.";
+        oss << "Discovered " << discoveredCount << " controller(s) via Libera.";
+        impl_->logger->info(oss.str());
+    } else {
+        impl_->setState(RuntimeState::Starting, "Connecting controllers...");
+        std::ostringstream oss;
+        oss << "Using " << impl_->discoveredControllerInfos.size()
+            << " controller(s) from the latest scan.";
         impl_->logger->info(oss.str());
     }
+
+    const auto& discovered = impl_->discoveredControllerInfos;
 
     std::vector<std::shared_ptr<LiberaTarget>> targets;
     targets.reserve(discovered.size());
@@ -2574,6 +2660,11 @@ bool LinkRuntime::start(const LinkOptions& options,
         while (!impl->stopRequested.load(std::memory_order_relaxed)) {
             {
                 std::lock_guard<std::mutex> lock(impl->mutex);
+                for (auto& activeHost : impl->virtualControllerHosts) {
+                    if (activeHost.host) {
+                        activeHost.endpoints = activeHost.host->endpoints();
+                    }
+                }
                 for (auto& target : impl->targets) {
                     target->logStatsIfDue();
                 }
@@ -2584,6 +2675,10 @@ bool LinkRuntime::start(const LinkOptions& options,
 
     impl_->logger->info("Link running.");
     return true;
+}
+
+void LinkRuntime::invalidateDiscoveryCache() {
+    impl_->discoveredControllerInfos.clear();
 }
 
 void LinkRuntime::requestStop() {

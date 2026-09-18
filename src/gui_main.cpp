@@ -6,6 +6,7 @@
 #include "AvbSettings.hpp"
 #include "libera/System.hpp"
 #include "libera/gui/imgui/PluginManagementPanel.hpp"
+#include "libera/plugin/PluginManagement.hpp"
 #include "libera/plugin/PluginSettings.hpp"
 #include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
@@ -510,6 +511,8 @@ int runGuiApplication() {
     libera_link::loadAvbSettings(libera_link::avbSettingsPath(), avbWindowState.lastError);
     libera_link::LinkRuntime runtime;
     libera_link::LinkOptions linkOptions;
+    linkOptions.selectedControllerDrivers =
+        libera::plugin::selectedControllerDrivers();
     if (const auto defaultVirtualControllerHost = libera_link::virtual_controller::defaultVirtualControllerHost()) {
         linkOptions.virtualControllerHostId = defaultVirtualControllerHost->id;
     }
@@ -531,6 +534,7 @@ int runGuiApplication() {
     bool linkSyncPending = false;
     bool showLogsWindow = false;
     bool showPluginsWindow = false;
+    bool focusPluginsWindow = false;
     bool showSettingsWindow = false;
     bool showAvbWindow = false;
     std::set<std::string> enabledControllers = loadEnabledControllers();
@@ -711,6 +715,19 @@ int runGuiApplication() {
                 }));
         };
 
+        const std::size_t linkableControllerCount = linkableCount();
+        const bool allControllersRunning =
+            linkableControllerCount > 0 &&
+            snapshot.state == libera_link::RuntimeState::Running &&
+            std::all_of(
+                snapshot.discovered.begin(),
+                snapshot.discovered.end(),
+                [&](const libera_link::DiscoveredControllerSnapshot& controller) {
+                    return !controller.linkable ||
+                           endpointByControllerId.find(controller.id) !=
+                               endpointByControllerId.end();
+                });
+
         auto virtualControllerHostInfoForId = [&](const std::string& hostId) {
             return std::find_if(
                 availableVirtualControllerHosts.begin(), availableVirtualControllerHosts.end(),
@@ -797,6 +814,7 @@ int runGuiApplication() {
             }
             if (ImGui::Button(scanButtonLabel, ImVec2(140.0f, 0.0f))) {
                 if (linkRunning) {
+                    runtime.invalidateDiscoveryCache();
                     rescanInFlight = true;
                     linkSyncPending = false;
                 } else {
@@ -809,22 +827,26 @@ int runGuiApplication() {
         }
 
         ImGui::SameLine();
-        const bool startAllDisabled =
-            scanInFlight || startInFlight || stopInFlight || rescanInFlight || linkableCount() == 0;
-        if (startAllDisabled) {
+        const bool bulkActionDisabled =
+            scanInFlight || startInFlight || stopInFlight || rescanInFlight ||
+            linkableControllerCount == 0;
+        if (bulkActionDisabled) {
             ImGui::BeginDisabled();
         }
-        if (ImGui::Button("START ALL", ImVec2(140.0f, 0.0f))) {
+        if (ImGui::Button(allControllersRunning ? "STOP ALL" : "START ALL",
+                          ImVec2(140.0f, 0.0f))) {
             enabledControllers.clear();
-            for (const auto& controller : snapshot.discovered) {
-                if (controller.linkable) {
-                    enabledControllers.insert(controller.id);
+            if (!allControllersRunning) {
+                for (const auto& controller : snapshot.discovered) {
+                    if (controller.linkable) {
+                        enabledControllers.insert(controller.id);
+                    }
                 }
             }
             saveEnabledControllers(enabledControllers);
             linkSyncPending = true;
         }
-        if (startAllDisabled) {
+        if (bulkActionDisabled) {
             ImGui::EndDisabled();
         }
 
@@ -1206,13 +1228,9 @@ int runGuiApplication() {
             ImGui::EndChild();
         }
 
-        if (snapshot.discovered.empty()) {
-            if (snapshot.hasDiscoveryResults) {
-                ImGui::TextWrapped("No controllers were found during the last scan. Check connections or plugins, then rescan.");
-            } else {
-                ImGui::TextWrapped("No scan results yet. Click RESCAN to discover controllers, then enable the ones you want to link.");
-            }
-        } else if (linkableCount() == 0) {
+        if (snapshot.discovered.empty() && snapshot.hasDiscoveryResults) {
+            ImGui::TextWrapped("No controllers were found during the last scan. Check connections or plugins, then rescan.");
+        } else if (!snapshot.discovered.empty() && linkableControllerCount == 0) {
             ImGui::TextWrapped("Controllers were discovered, but none of them are currently linkable.");
         }
         ImGui::EndChild();
@@ -1279,6 +1297,7 @@ int runGuiApplication() {
                 ImGui::SameLine();
                 if (ImGui::Button(ICON_FK_PLUS_CIRCLE "  Plugins", ImVec2(140.0f, 0.0f))) {
                     showPluginsWindow = true;
+                    focusPluginsWindow = true;
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("AVB Setup", ImVec2(140.0f, 0.0f))) {
@@ -1289,19 +1308,13 @@ int runGuiApplication() {
                 ImGui::Spacing();
                 drawSectionTitle(app, "Controller Discovery");
 
-                const bool discoverySettingsLocked =
+                const bool driverSelectionLocked =
                     scanInFlight || startInFlight || stopInFlight || rescanInFlight;
 
                 if (!disabledControllerTypes.empty()) {
-                    if (discoverySettingsLocked) {
-                        ImGui::BeginDisabled();
-                    }
                     if (ImGui::Button(ICON_FK_CHECK "  Enable All", ImVec2(150.0f, 0.0f))) {
                         disabledControllerTypes.clear();
                         requestDiscoverySettingsSync();
-                    }
-                    if (discoverySettingsLocked) {
-                        ImGui::EndDisabled();
                     }
                 }
 
@@ -1315,38 +1328,109 @@ int runGuiApplication() {
                     ImGui::TextDisabled("No controller managers registered.");
                 }
 
+                std::unordered_map<std::string,
+                                   std::vector<libera::core::ControllerManagerInfo>>
+                    managersByType;
+                std::vector<std::string> managerTypes;
                 for (const auto& manager : availableControllerManagers) {
-                    if (manager.type.empty()) {
-                        continue;
+                    if (manager.type.empty()) continue;
+                    if (managersByType.find(manager.type) == managersByType.end()) {
+                        managerTypes.push_back(manager.type);
                     }
-                    ImGui::PushID(manager.type.c_str());
+                    managersByType[manager.type].push_back(manager);
+                }
+                std::sort(managerTypes.begin(), managerTypes.end());
+                const auto selectedDrivers =
+                    libera::plugin::selectedControllerDrivers();
 
-                    bool enabled = disabledControllerTypes.find(manager.type) ==
+                for (const auto& type : managerTypes) {
+                    const auto& implementations = managersByType[type];
+                    ImGui::PushID(type.c_str());
+
+                    bool enabled = disabledControllerTypes.find(type) ==
                                    disabledControllerTypes.end();
-                    if (discoverySettingsLocked) {
-                        ImGui::BeginDisabled();
-                    }
                     if (ImGui::Checkbox("##enabled", &enabled)) {
                         if (enabled) {
-                            disabledControllerTypes.erase(manager.type);
+                            disabledControllerTypes.erase(type);
                         } else {
-                            disabledControllerTypes.insert(manager.type);
+                            disabledControllerTypes.insert(type);
                         }
                         requestDiscoverySettingsSync();
                     }
-                    if (discoverySettingsLocked) {
-                        ImGui::EndDisabled();
+
+                    if (implementations.size() == 1) {
+                        const auto& implementation = implementations.front();
+                        const std::string label = implementation.displayName.empty()
+                            ? type
+                            : implementation.displayName;
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted(label.c_str());
+                        if (!implementation.description.empty() &&
+                            ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("%s",
+                                              implementation.description.c_str());
+                        }
+                        if (label != type) {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(%s)", type.c_str());
+                        }
+                        ImGui::PopID();
+                        continue;
                     }
 
                     ImGui::SameLine();
-                    const std::string label =
-                        manager.displayName.empty() ? manager.type : manager.displayName;
-                    ImGui::TextUnformatted(label.c_str());
-                    if (!manager.description.empty() && ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("%s", manager.description.c_str());
+                    ImGui::TextUnformatted(type.c_str());
+
+                    const libera::core::ControllerManagerInfo* selected = nullptr;
+                    const auto saved = selectedDrivers.find(type);
+                    if (saved != selectedDrivers.end()) {
+                        const auto found = std::find_if(
+                            implementations.begin(), implementations.end(),
+                            [&](const auto& implementation) {
+                                return implementation.driverId == saved->second;
+                            });
+                        if (found != implementations.end()) selected = &*found;
                     }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(%s)", manager.type.c_str());
+                    if (!selected) {
+                        const auto builtIn = std::find_if(
+                            implementations.begin(), implementations.end(),
+                            [](const auto& implementation) {
+                                return implementation.builtIn;
+                            });
+                        if (builtIn != implementations.end()) selected = &*builtIn;
+                        else if (implementations.size() == 1) selected = &implementations.front();
+                    }
+
+                    ImGui::SameLine(180.0f);
+                    const std::string preview = selected
+                        ? selected->displayName
+                        : "Choose a driver";
+                    if (driverSelectionLocked) ImGui::BeginDisabled();
+                    ImGui::SetNextItemWidth(-1.0f);
+                    if (ImGui::BeginCombo("##driver", preview.c_str())) {
+                        for (const auto& implementation : implementations) {
+                            const bool isSelected = selected &&
+                                selected->driverId == implementation.driverId;
+                            const std::string label = implementation.displayName +
+                                (implementation.builtIn ? " (built-in)" : " (plugin)");
+                            if (ImGui::Selectable(label.c_str(), isSelected)) {
+                                std::string error;
+                                if (libera::plugin::selectControllerDriver(
+                                        type, implementation.driverId, &error)) {
+                                    linkOptions.selectedControllerDrivers[type] =
+                                        implementation.driverId;
+                                    requestDiscoverySettingsSync();
+                                }
+                            }
+                            if (ImGui::IsItemHovered() &&
+                                !implementation.description.empty()) {
+                                ImGui::SetTooltip("%s",
+                                                  implementation.description.c_str());
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (driverSelectionLocked) ImGui::EndDisabled();
 
                     ImGui::PopID();
                 }
@@ -1354,7 +1438,7 @@ int runGuiApplication() {
                 bool hasPluginControllerSettings = false;
                 for (const auto& controller : snapshot.discovered) {
                     const auto settings = libera::plugin::controllerSettings(
-                        controller.type,
+                        controller.driverId,
                         controller.id);
                     if (settings.empty()) {
                         continue;
@@ -1368,7 +1452,7 @@ int runGuiApplication() {
                     }
 
                     const std::string settingsKey =
-                        controller.type + "\n" + controller.id;
+                        controller.driverId + "\n" + controller.id;
                     auto& settingsState =
                         controllerPluginSettingsStates[settingsKey];
 
@@ -1378,7 +1462,7 @@ int runGuiApplication() {
                     if (ImGui::TreeNodeEx(label.c_str(),
                                           ImGuiTreeNodeFlags_SpanAvailWidth)) {
                         libera::gui::imgui::DrawPluginControllerSettings(
-                            controller.type,
+                            controller.driverId,
                             controller.id,
                             settingsState);
 
@@ -1466,7 +1550,8 @@ int runGuiApplication() {
             }
         }
 
-        libera::ui::DrawPluginsWindow(&showPluginsWindow);
+        libera::ui::DrawPluginsWindow(&showPluginsWindow, focusPluginsWindow);
+        focusPluginsWindow = false;
         app.endFrame();
     }
 

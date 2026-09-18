@@ -39,4 +39,12 @@ std::string OpenFileDialog(const char* title,
     }
 }
 
+void OpenPath(const std::string& path) {
+    @autoreleasepool {
+        NSString* value = [NSString stringWithUTF8String:path.c_str()];
+        if (!value) return;
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:value]];
+    }
+}
+
 } // namespace libera::ui

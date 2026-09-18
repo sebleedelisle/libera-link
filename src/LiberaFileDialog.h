@@ -12,4 +12,7 @@ namespace libera::ui {
 std::string OpenFileDialog(const char* title,
                            const std::vector<std::string>& extensions);
 
+// Open a document or directory using the platform's normal file browser/app.
+void OpenPath(const std::string& path);
+
 } // namespace libera::ui

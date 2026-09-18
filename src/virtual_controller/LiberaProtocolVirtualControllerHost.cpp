@@ -3,6 +3,7 @@
 #include "virtual_controller/VirtualControllerHostRegistry.hpp"
 
 #include "libera/net/NetConfig.hpp"
+#include "libera/log/Log.hpp"
 #include "libera/protocol/Codec.hpp"
 #include "libera/protocol/Sender.hpp"
 
@@ -39,11 +40,13 @@ constexpr std::uint32_t defaultMaxPointRate = 100000;
 constexpr std::uint32_t defaultMinPointRate = 1000;
 constexpr std::uint32_t defaultMaxFramePoints = 300000;
 constexpr std::uint32_t defaultMaxRecordPayloadBytes = 4u * 1024u * 1024u;
+constexpr std::uint32_t defaultHandshakeTimeoutMs = 2000;
+constexpr std::uint32_t defaultSessionTimeoutMs = 1500;
+constexpr std::size_t maxConcurrentSockets = 32;
 constexpr std::uint8_t maxLaserPointUserChannels = 2;
 constexpr std::uint32_t supportedFeatureFlags =
     protocol::FeatureTargetBeginTime |
-    protocol::FeatureScannerSync |
-    protocol::FeatureStatus;
+    protocol::FeatureScannerSync;
 
 std::string trim(std::string_view text) {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
@@ -179,6 +182,8 @@ struct HostOptions {
     std::uint32_t maxPointRate = defaultMaxPointRate;
     std::uint32_t maxFramePoints = defaultMaxFramePoints;
     std::uint32_t maxRecordPayloadBytes = defaultMaxRecordPayloadBytes;
+    std::uint32_t handshakeTimeoutMs = defaultHandshakeTimeoutMs;
+    std::uint32_t sessionTimeoutMs = defaultSessionTimeoutMs;
     std::uint8_t maxUserChannels = maxLaserPointUserChannels;
     bool discoveryEnabled = true;
 };
@@ -199,6 +204,10 @@ HostOptions makeHostOptions(const VirtualControllerHostConfig& config) {
         1u, optionU32(config, "max_frame_points", options.maxFramePoints));
     options.maxRecordPayloadBytes = std::max<std::uint32_t>(
         1024u, optionU32(config, "max_record_payload_bytes", options.maxRecordPayloadBytes));
+    options.handshakeTimeoutMs = std::max<std::uint32_t>(
+        100u, optionU32(config, "handshake_timeout_ms", options.handshakeTimeoutMs));
+    options.sessionTimeoutMs = std::max<std::uint32_t>(
+        250u, optionU32(config, "session_timeout_ms", options.sessionTimeoutMs));
     options.maxUserChannels = static_cast<std::uint8_t>(std::min<std::uint32_t>(
         maxLaserPointUserChannels,
         optionU32(config, "max_user_channels", options.maxUserChannels)));
@@ -265,6 +274,11 @@ struct SessionState {
     std::optional<PendingFrame> pendingFrame;
 };
 
+struct SessionWorker {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> finished;
+};
+
 class TargetServer final {
 public:
     TargetServer(Target target,
@@ -295,7 +309,7 @@ public:
         }
 
         acceptor_ = std::make_unique<tcp::acceptor>(io_);
-        acceptor_->open(tcp::v4(), ec);
+        acceptor_->open(address.is_v6() ? tcp::v6() : tcp::v4(), ec);
         if (ec) {
             error = "Libera protocol TCP acceptor open failed: " + ec.message();
             return false;
@@ -312,6 +326,11 @@ public:
             error = "Libera protocol TCP listen failed: " + ec.message();
             return false;
         }
+        acceptor_->non_blocking(true, ec);
+        if (ec) {
+            error = "Libera protocol TCP non-blocking mode failed: " + ec.message();
+            return false;
+        }
 
         running_.store(true, std::memory_order_release);
         acceptThread_ = std::thread([this] { acceptLoop(); });
@@ -323,31 +342,27 @@ public:
             return;
         }
 
-        std::error_code ignored;
-        if (acceptor_) {
-            acceptor_->close(ignored);
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(activeSocketsMutex_);
-            for (auto& socket : activeSockets_) {
-                if (socket && socket->is_open()) {
-                    socket->close(ignored);
-                }
-            }
-        }
-
         if (acceptThread_.joinable()) {
             acceptThread_.join();
         }
 
-        for (auto& thread : sessionThreads_) {
-            if (thread.joinable()) {
-                thread.join();
+        for (auto& worker : sessionWorkers_) {
+            if (worker.thread.joinable()) {
+                worker.thread.join();
             }
         }
-        sessionThreads_.clear();
+        sessionWorkers_.clear();
+
+        std::error_code ignored;
+        for (auto& socket : activeSockets_) {
+            if (socket && socket->is_open()) {
+                socket->close(ignored);
+            }
+        }
         activeSockets_.clear();
+        if (acceptor_) {
+            acceptor_->close(ignored);
+        }
     }
 
     VirtualControllerEndpoint endpoint() const {
@@ -389,10 +404,8 @@ public:
             protocol::streamModeMask(protocol::StreamMode::FrameByCount);
         advertisement.availability = endpointAvailability();
         advertisement.maxUserChannelCount = options_.maxUserChannels;
-        advertisement.minPointRate = options_.minPointRate;
-        advertisement.maxPointRate = info.maxPointRate > 0
-            ? std::min<std::uint32_t>(info.maxPointRate, options_.maxPointRate)
-            : options_.maxPointRate;
+        advertisement.minPointRate = effectiveMinPointRate();
+        advertisement.maxPointRate = effectiveMaxPointRate();
         advertisement.maxFramePointCount = options_.maxFramePoints;
         advertisement.featureFlags = supportedFeatureFlags;
         return advertisement;
@@ -403,6 +416,18 @@ private:
         return sessionOwned_.load(std::memory_order_acquire)
             ? protocol::EndpointAvailability::Busy
             : protocol::EndpointAvailability::Available;
+    }
+
+    std::uint32_t effectiveMaxPointRate() const noexcept {
+        const auto targetMax = target_.sink && target_.sink->targetInfo().maxPointRate > 0
+            ? target_.sink->targetInfo().maxPointRate
+            : options_.maxPointRate;
+        return std::max<std::uint32_t>(
+            1u, std::min<std::uint32_t>(targetMax, options_.maxPointRate));
+    }
+
+    std::uint32_t effectiveMinPointRate() const noexcept {
+        return std::min<std::uint32_t>(options_.minPointRate, effectiveMaxPointRate());
     }
 
     bool tryAcquireSession() noexcept {
@@ -417,6 +442,25 @@ private:
         sessionOwned_.store(false, std::memory_order_release);
     }
 
+    void logBusyRejection(std::string_view senderName) {
+        const auto rejected = busyRejectsSinceLog_.fetch_add(1, std::memory_order_relaxed) + 1;
+        const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        auto previousNs = lastBusyLogNs_.load(std::memory_order_relaxed);
+        if ((nowNs - previousNs) < std::chrono::duration_cast<std::chrono::nanoseconds>(1s).count() ||
+            !lastBusyLogNs_.compare_exchange_strong(previousNs,
+                                                    nowNs,
+                                                    std::memory_order_relaxed)) {
+            return;
+        }
+
+        const auto summarized = busyRejectsSinceLog_.exchange(0, std::memory_order_relaxed);
+        libera::log::logInfo("[LiberaProtocolHost] rejected busy session",
+                             target_.sink->targetInfo().label,
+                             "sender", senderName,
+                             "rejections", std::max<std::uint64_t>(summarized, rejected));
+    }
+
     void sendReject(tcp::socket& socket, protocol::RejectCode code, std::string message) const {
         protocol::Reject reject;
         reject.code = code;
@@ -427,24 +471,67 @@ private:
 
     void acceptLoop() {
         while (running_.load(std::memory_order_acquire)) {
+            reapCompletedSessionWorkers();
+
             auto socket = std::make_shared<tcp::socket>(io_);
             std::error_code ec;
             acceptor_->accept(*socket, ec);
             if (ec) {
-                if (running_.load(std::memory_order_acquire)) {
-                    std::this_thread::sleep_for(25ms);
+                if (!running_.load(std::memory_order_acquire)) {
+                    break;
                 }
+                const auto retryDelay =
+                    (ec == asio::error::would_block || ec == asio::error::try_again)
+                    ? 2ms
+                    : 25ms;
+                std::this_thread::sleep_for(retryDelay);
                 continue;
             }
 
             {
                 std::lock_guard<std::mutex> lock(activeSocketsMutex_);
+                if (activeSockets_.size() >= maxConcurrentSockets) {
+                    socket->close(ec);
+                    libera::log::logError("[LiberaProtocolHost] connection limit reached",
+                                          target_.sink->targetInfo().label,
+                                          maxConcurrentSockets);
+                    continue;
+                }
                 activeSockets_.push_back(socket);
             }
-            sessionThreads_.emplace_back([this, socket] {
+
+            socket->set_option(tcp::no_delay(true), ec);
+            socket->set_option(asio::socket_base::keep_alive(true), ec);
+            socket->non_blocking(true, ec);
+            if (ec) {
+                socket->close(ec);
+                removeActiveSocket(socket);
+                continue;
+            }
+
+            auto finished = std::make_shared<std::atomic<bool>>(false);
+            SessionWorker worker;
+            worker.finished = finished;
+            worker.thread = std::thread([this, socket, finished] {
                 runSession(socket);
                 removeActiveSocket(socket);
+                finished->store(true, std::memory_order_release);
             });
+            sessionWorkers_.push_back(std::move(worker));
+        }
+    }
+
+    void reapCompletedSessionWorkers() {
+        auto it = sessionWorkers_.begin();
+        while (it != sessionWorkers_.end()) {
+            if (!it->finished || !it->finished->load(std::memory_order_acquire)) {
+                ++it;
+                continue;
+            }
+            if (it->thread.joinable()) {
+                it->thread.join();
+            }
+            it = sessionWorkers_.erase(it);
         }
     }
 
@@ -455,12 +542,54 @@ private:
             activeSockets_.end());
     }
 
-    bool readRecord(tcp::socket& socket, protocol::Record& record, std::string& error) const {
+    bool readExact(tcp::socket& socket,
+                   std::uint8_t* destination,
+                   std::size_t size,
+                   std::chrono::milliseconds idleTimeout,
+                   std::string& error) const {
+        std::size_t offset = 0;
+        auto deadline = std::chrono::steady_clock::now() + idleTimeout;
+        while (offset < size && running_.load(std::memory_order_acquire)) {
+            std::error_code ec;
+            const auto received = socket.read_some(
+                asio::buffer(destination + offset, size - offset), ec);
+            if (!ec) {
+                if (received == 0) {
+                    error = "connection closed";
+                    return false;
+                }
+                offset += received;
+                deadline = std::chrono::steady_clock::now() + idleTimeout;
+                continue;
+            }
+            if (ec != asio::error::would_block && ec != asio::error::try_again) {
+                error = ec.message();
+                return false;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                error = "session inactivity timeout";
+                return false;
+            }
+            std::this_thread::sleep_for(2ms);
+        }
+        if (offset != size) {
+            error = "server stopped";
+            return false;
+        }
+        return true;
+    }
+
+    bool readRecord(tcp::socket& socket,
+                    protocol::Record& record,
+                    std::chrono::milliseconds idleTimeout,
+                    std::string& error) const {
+        error.clear();
         std::array<std::uint8_t, protocol::RECORD_HEADER_SIZE> headerBytes{};
-        std::error_code ec;
-        asio::read(socket, asio::buffer(headerBytes), ec);
-        if (ec) {
-            error = ec.message();
+        if (!readExact(socket,
+                       headerBytes.data(),
+                       headerBytes.size(),
+                       idleTimeout,
+                       error)) {
             return false;
         }
 
@@ -475,9 +604,11 @@ private:
 
         std::vector<std::uint8_t> payload(header.payloadSize);
         if (!payload.empty()) {
-            asio::read(socket, asio::buffer(payload), ec);
-            if (ec) {
-                error = ec.message();
+            if (!readExact(socket,
+                           payload.data(),
+                           payload.size(),
+                           idleTimeout,
+                           error)) {
                 return false;
             }
         }
@@ -490,9 +621,28 @@ private:
     }
 
     bool writeBytes(tcp::socket& socket, const std::vector<std::uint8_t>& bytes) const {
-        std::error_code ec;
-        asio::write(socket, asio::buffer(bytes), ec);
-        return !ec;
+        std::size_t offset = 0;
+        const auto deadline = std::chrono::steady_clock::now() + 500ms;
+        while (offset < bytes.size() && running_.load(std::memory_order_acquire)) {
+            std::error_code ec;
+            const auto written = socket.write_some(
+                asio::buffer(bytes.data() + offset, bytes.size() - offset), ec);
+            if (!ec) {
+                if (written == 0) {
+                    return false;
+                }
+                offset += written;
+                continue;
+            }
+            if (ec != asio::error::would_block && ec != asio::error::try_again) {
+                return false;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            std::this_thread::sleep_for(2ms);
+        }
+        return offset == bytes.size();
     }
 
     void runSession(const std::shared_ptr<tcp::socket>& socket) {
@@ -503,7 +653,10 @@ private:
         SessionState state;
         protocol::Record record;
         std::string error;
-        if (!readRecord(*socket, record, error) || record.type != protocol::RecordType::Hello) {
+        const auto handshakeTimeout = std::chrono::milliseconds(options_.handshakeTimeoutMs);
+        const auto sessionTimeout = std::chrono::milliseconds(options_.sessionTimeoutMs);
+        if (!readRecord(*socket, record, handshakeTimeout, error) ||
+            record.type != protocol::RecordType::Hello) {
             return;
         }
 
@@ -514,21 +667,37 @@ private:
         }
 
         if (!tryAcquireSession()) {
+            logBusyRejection(hello.senderName);
             sendReject(*socket,
                        protocol::RejectCode::Busy,
                        "Endpoint already has an active session.");
             return;
         }
 
+        std::string remote = "unknown";
+        std::error_code remoteError;
+        const auto remoteEndpoint = socket->remote_endpoint(remoteError);
+        if (!remoteError) {
+            remote = remoteEndpoint.address().to_string() + ":" +
+                     std::to_string(remoteEndpoint.port());
+        }
+
+        libera::log::logInfo("[LiberaProtocolHost] session accepted",
+                             target_.sink->targetInfo().label,
+                             "remote", remote,
+                             "sender", hello.senderName);
+
         target_.sink->reset();
+        const auto minPointRate = effectiveMinPointRate();
+        const auto maxPointRate = effectiveMaxPointRate();
         state.streamMode = acceptedMode(hello.requestedStreamMode);
         state.userChannelCount = static_cast<std::uint8_t>(std::min<std::uint32_t>(
             options_.maxUserChannels,
             hello.requestedUserChannelCount));
         state.pointRate = std::clamp<std::uint32_t>(
             hello.defaultPointRate == 0 ? 30000u : hello.defaultPointRate,
-            options_.minPointRate,
-            options_.maxPointRate);
+            minPointRate,
+            maxPointRate);
         state.sender.setUserChannelCount(state.userChannelCount);
         state.sessionStartedAt = std::chrono::steady_clock::now();
 
@@ -536,7 +705,7 @@ private:
         accept.acceptedStreamMode = state.streamMode;
         accept.acceptedUserChannelCount = state.userChannelCount;
         accept.defaultPointRate = state.pointRate;
-        accept.maxPointRate = options_.maxPointRate;
+        accept.maxPointRate = maxPointRate;
         accept.maxFramePointCount = options_.maxFramePoints;
         accept.maxRecordPayloadSize = options_.maxRecordPayloadBytes;
         accept.sessionId = static_cast<std::uint64_t>(
@@ -549,23 +718,31 @@ private:
             return;
         }
 
-        if (!readRecord(*socket, record, error) || record.type != protocol::RecordType::Ready) {
+        if (!readRecord(*socket, record, handshakeTimeout, error) ||
+            record.type != protocol::RecordType::Ready) {
             target_.sink->reset();
             releaseSession();
             return;
         }
 
         while (running_.load(std::memory_order_acquire) && socket->is_open()) {
-            if (!readRecord(*socket, record, error)) {
+            if (!readRecord(*socket, record, sessionTimeout, error)) {
                 break;
             }
             if (!handleRecord(*socket, state, record)) {
+                error = record.type == protocol::RecordType::Close
+                    ? "orderly close"
+                    : "invalid protocol record";
                 break;
             }
         }
 
         target_.sink->reset();
         releaseSession();
+        libera::log::logInfo("[LiberaProtocolHost] session ended",
+                             target_.sink->targetInfo().label,
+                             "remote", remote,
+                             "reason", error.empty() ? "closed" : error);
     }
 
     bool handleRecord(tcp::socket& socket,
@@ -584,9 +761,9 @@ private:
         case protocol::RecordType::Ping:
             if (record.payload.size() == 8) {
                 const auto timestamp = protocol::readUInt64(record.payload.data());
-                writeBytes(socket, state.sender.makePong(timestamp));
+                return writeBytes(socket, state.sender.makePong(timestamp));
             }
-            return true;
+            return false;
         case protocol::RecordType::Close:
             return false;
         default:
@@ -613,8 +790,8 @@ private:
         if (config.defaultPointRate != 0) {
             state.pointRate = std::clamp<std::uint32_t>(
                 config.defaultPointRate,
-                options_.minPointRate,
-                options_.maxPointRate);
+                effectiveMinPointRate(),
+                effectiveMaxPointRate());
         }
         state.pendingFrame.reset();
         return true;
@@ -645,15 +822,12 @@ private:
                                          error)) {
             return false;
         }
-        if (marker.framePointCount > options_.maxFramePoints) {
+        if (marker.framePointCount == 0 || marker.framePointCount > options_.maxFramePoints) {
             return false;
         }
-
-        if (state.pendingFrame && !state.pendingFrame->points.empty() &&
-            state.pendingFrame->marker.framePointCount == 0) {
-            submitPendingFrame(state);
+        if (state.streamMode != protocol::StreamMode::FrameByCount || state.pendingFrame) {
+            return false;
         }
-        state.pendingFrame.reset();
 
         PendingFrame pending;
         pending.marker = marker;
@@ -668,8 +842,8 @@ private:
         if (marker.pointRate != 0) {
             state.pointRate = std::clamp<std::uint32_t>(
                 marker.pointRate,
-                options_.minPointRate,
-                options_.maxPointRate);
+                effectiveMinPointRate(),
+                effectiveMaxPointRate());
         }
         return true;
     }
@@ -687,44 +861,33 @@ private:
         }
         auto points = toLaserPoints(samples);
         if (state.pendingFrame) {
-            appendFramePoints(state, std::move(points));
-            return true;
+            return appendFramePoints(state, std::move(points));
+        }
+        if (state.streamMode == protocol::StreamMode::FrameByCount) {
+            return false;
         }
 
         submitContinuousPoints(std::move(points), state.pointRate);
         return true;
     }
 
-    void appendFramePoints(SessionState& state, std::vector<LaserPoint> points) {
-        std::size_t cursor = 0;
-        while (cursor < points.size()) {
-            if (!state.pendingFrame) {
-                std::vector<LaserPoint> remaining(
-                    points.begin() + static_cast<std::ptrdiff_t>(cursor),
-                    points.end());
-                submitContinuousPoints(std::move(remaining), state.pointRate);
-                return;
-            }
-
-            auto& pending = *state.pendingFrame;
-            const std::uint32_t expected = pending.marker.framePointCount;
-            const std::size_t available = points.size() - cursor;
-            const std::size_t remaining = expected > 0
-                ? expected - std::min<std::size_t>(pending.points.size(), expected)
-                : available;
-            const std::size_t toCopy = std::min<std::size_t>(available, remaining);
-            pending.points.insert(
-                pending.points.end(),
-                points.begin() + static_cast<std::ptrdiff_t>(cursor),
-                points.begin() + static_cast<std::ptrdiff_t>(cursor + toCopy));
-            cursor += toCopy;
-
-            if (expected > 0 && pending.points.size() >= expected) {
-                submitPendingFrame(state);
-            } else if (toCopy == 0) {
-                state.pendingFrame.reset();
-            }
+    bool appendFramePoints(SessionState& state, std::vector<LaserPoint> points) {
+        if (!state.pendingFrame) {
+            return false;
         }
+
+        auto& pending = *state.pendingFrame;
+        const std::size_t expected = pending.marker.framePointCount;
+        if (expected == 0 || pending.points.size() > expected ||
+            points.size() > (expected - pending.points.size())) {
+            return false;
+        }
+
+        pending.points.insert(pending.points.end(), points.begin(), points.end());
+        if (pending.points.size() == expected) {
+            submitPendingFrame(state);
+        }
+        return true;
     }
 
     void submitContinuousPoints(std::vector<LaserPoint> points, std::uint32_t pointRate) {
@@ -749,8 +912,8 @@ private:
 
         const std::uint32_t pointRate = pending.marker.pointRate != 0
             ? std::clamp<std::uint32_t>(pending.marker.pointRate,
-                                        options_.minPointRate,
-                                        options_.maxPointRate)
+                                        effectiveMinPointRate(),
+                                        effectiveMaxPointRate())
             : state.pointRate;
 
         SliceSubmission slice;
@@ -772,11 +935,13 @@ private:
     asio::io_context io_;
     std::unique_ptr<tcp::acceptor> acceptor_;
     std::thread acceptThread_;
-    std::vector<std::thread> sessionThreads_;
+    std::vector<SessionWorker> sessionWorkers_;
     std::vector<std::shared_ptr<tcp::socket>> activeSockets_;
     std::mutex activeSocketsMutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> sessionOwned_{false};
+    std::atomic<std::uint64_t> busyRejectsSinceLog_{0};
+    std::atomic<std::int64_t> lastBusyLogNs_{0};
 };
 
 VirtualControllerHostRegistrar gLiberaProtocolVirtualControllerHostRegistrar({
@@ -857,6 +1022,24 @@ VirtualControllerHostRegistrar gLiberaProtocolVirtualControllerHostRegistrar({
                 {},
                 false,
             },
+            {
+                "handshake_timeout_ms",
+                "Handshake Timeout",
+                "Close clients that do not complete the handshake within this idle period.",
+                VirtualControllerHostOptionType::Integer,
+                std::to_string(defaultHandshakeTimeoutMs),
+                {},
+                false,
+            },
+            {
+                "session_timeout_ms",
+                "Session Timeout",
+                "Reset and release an endpoint after this long without protocol traffic.",
+                VirtualControllerHostOptionType::Integer,
+                std::to_string(defaultSessionTimeoutMs),
+                {},
+                false,
+            },
         },
         false,
     },
@@ -876,24 +1059,22 @@ struct LiberaProtocolVirtualControllerHost::Impl {
     std::thread advertiserThread;
     std::atomic<bool> active{false};
 
-    std::size_t nextServerIndexLocked() const {
-        std::size_t index = 0;
-        while (true) {
+    std::optional<std::size_t> nextServerIndexLocked() const {
+        const auto availablePortCount =
+            static_cast<std::size_t>(std::numeric_limits<std::uint16_t>::max()) -
+            options.tcpPort + 1u;
+        for (std::size_t index = 0; index < availablePortCount; ++index) {
+            const auto candidatePort = static_cast<std::uint16_t>(
+                static_cast<std::size_t>(options.tcpPort) + index);
             const bool inUse = std::any_of(
                 servers.begin(), servers.end(), [&](const auto& server) {
-                    return server &&
-                           server->endpoint().port ==
-                               static_cast<std::uint16_t>(
-                                   std::min<unsigned>(
-                                       std::numeric_limits<std::uint16_t>::max(),
-                                       static_cast<unsigned>(options.tcpPort) +
-                                           static_cast<unsigned>(index)));
+                    return server && server->endpoint().port == candidatePort;
                 });
             if (!inUse) {
                 return index;
             }
-            ++index;
         }
+        return std::nullopt;
     }
 
     bool addServer(Target target, std::string& error) {
@@ -912,13 +1093,14 @@ struct LiberaProtocolVirtualControllerHost::Impl {
             return true;
         }
 
-        const std::size_t index = nextServerIndexLocked();
+        const auto index = nextServerIndexLocked();
+        if (!index) {
+            error = "No Libera protocol TCP ports remain at or above the configured base port.";
+            return false;
+        }
         const auto port = static_cast<std::uint16_t>(
-            std::min<unsigned>(
-                std::numeric_limits<std::uint16_t>::max(),
-                static_cast<unsigned>(options.tcpPort) +
-                    static_cast<unsigned>(index)));
-        auto server = std::make_unique<TargetServer>(target, options, port, index);
+            static_cast<std::size_t>(options.tcpPort) + *index);
+        auto server = std::make_unique<TargetServer>(target, options, port, *index);
         if (!server->start(error)) {
             return false;
         }
@@ -1044,6 +1226,14 @@ bool LiberaProtocolVirtualControllerHost::start(const VirtualControllerHostConte
     }
 
     impl_->options = makeHostOptions(config_);
+    if (impl_->options.tcpPort == 0) {
+        error = "Libera protocol TCP base port must be between 1 and 65535.";
+        return false;
+    }
+    if (impl_->options.discoveryEnabled && impl_->options.discoveryPort == 0) {
+        error = "Libera protocol discovery port must be between 1 and 65535.";
+        return false;
+    }
     impl_->active.store(true, std::memory_order_release);
 
     for (const auto& target : context.targets) {

@@ -30,7 +30,7 @@ libera::gui::imgui::PluginPanelState& pluginPanelState() {
 std::optional<std::string> choosePluginFile() {
     const std::string picked = OpenFileDialog(
         "Choose a Libera plugin to install",
-        {libera::plugin::platformPluginExtension()});
+        {libera::plugin::pluginPackageExtension()});
     if (picked.empty()) {
         return std::nullopt;
     }
@@ -90,12 +90,15 @@ void relaunchAndExit() {
 
 } // namespace
 
-void DrawPluginsWindow(bool* open) {
+void DrawPluginsWindow(bool* open, bool focusRequested) {
     if (!open || !*open) {
         return;
     }
 
     ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_FirstUseEver);
+    if (focusRequested) {
+        ImGui::SetNextWindowFocus();
+    }
     if (!ImGui::Begin(ICON_FK_PLUS_CIRCLE "  Plugins", open)) {
         ImGui::End();
         return;
@@ -104,6 +107,7 @@ void DrawPluginsWindow(bool* open) {
     libera::gui::imgui::PluginPanelCallbacks callbacks;
     callbacks.choosePluginFile = choosePluginFile;
     callbacks.requestRestart = relaunchAndExit;
+    callbacks.revealInFileBrowser = OpenPath;
     libera::gui::imgui::DrawPluginManagementPanel(pluginPanelState(), callbacks);
 
     ImGui::End();

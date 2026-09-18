@@ -1,6 +1,8 @@
 #include "virtual_controller/LiberaProtocolVirtualControllerHost.hpp"
 
 #include "libera/net/NetConfig.hpp"
+#include "libera/liberaprotocol/LiberaProtocolController.hpp"
+#include "libera/liberaprotocol/LiberaProtocolControllerInfo.hpp"
 #include "libera/protocol/Codec.hpp"
 #include "libera/protocol/Sender.hpp"
 
@@ -13,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -89,7 +92,11 @@ public:
         return status;
     }
 
-    void reset() override {}
+    void reset() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++resets_;
+        cv_.notify_all();
+    }
 
     bool waitForFrames(std::size_t count, std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -102,6 +109,13 @@ public:
         std::unique_lock<std::mutex> lock(mutex_);
         return cv_.wait_for(lock, timeout, [&] {
             return scannerSyncUpdates_ >= count;
+        });
+    }
+
+    bool waitForResets(std::size_t count, std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout, [&] {
+            return resets_ >= count;
         });
     }
 
@@ -149,6 +163,7 @@ private:
     std::size_t frames_ = 0;
     std::size_t continuousPoints_ = 0;
     std::size_t scannerSyncUpdates_ = 0;
+    std::size_t resets_ = 0;
     std::int64_t lastScannerSyncOffsetNs_ = 0;
     bool lastScannerSyncEnabled_ = false;
     std::vector<libera::core::LaserPoint> lastFrame_;
@@ -192,6 +207,21 @@ bool readRecord(tcp::socket& socket, protocol::Record& record) {
     return true;
 }
 
+bool waitForAvailability(vc::LiberaProtocolVirtualControllerHost& host,
+                         std::string_view expected,
+                         std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto endpoints = host.endpoints();
+        if (!endpoints.empty() &&
+            endpoints.front().attributes.at("availability") == expected) {
+            return true;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    return false;
+}
+
 } // namespace
 
 int main() {
@@ -203,6 +233,8 @@ int main() {
     config.options["advertised_address"] = "127.0.0.1";
     config.options["tcp_port"] = std::to_string(freeTcpPort());
     config.options["discovery"] = "false";
+    config.options["handshake_timeout_ms"] = "250";
+    config.options["session_timeout_ms"] = "800";
 
     vc::VirtualControllerHostContext context;
     context.targets.push_back(vc::Target{sink});
@@ -241,6 +273,9 @@ int main() {
                 "accepted frame-by-count");
     ASSERT_TRUE((accept.featureFlags & protocol::FeatureScannerSync) != 0,
                 "ACCEPT advertises scanner sync");
+    ASSERT_TRUE((accept.featureFlags & protocol::FeatureStatus) == 0,
+                "ACCEPT does not advertise unimplemented status records");
+    ASSERT_EQ(accept.maxPointRate, 60000, "ACCEPT honors target maximum point rate");
     sender.setUserChannelCount(accept.acceptedUserChannelCount);
     ASSERT_TRUE(writeBytes(socket, sender.makeReady()), "send READY");
 
@@ -311,6 +346,67 @@ int main() {
     ASSERT_TRUE(frame[1].y == 1.0f, "second point y");
     ASSERT_TRUE(frame[2].b > 0.99f, "third point blue");
 
+    // Simulate a half-open client: leave its socket open but send no more
+    // records. The endpoint must expire the stale session and become available.
+    ASSERT_TRUE(sink->waitForResets(2, 2000ms), "inactive session resets target");
+    ASSERT_TRUE(waitForAvailability(host, "available", 500ms),
+                "endpoint becomes available after inactivity timeout");
+
+    tcp::socket recoveredSocket(io);
+    recoveredSocket.connect(tcp::endpoint(asio::ip::make_address("127.0.0.1"),
+                                          endpoints[0].port),
+                            ec);
+    ASSERT_TRUE(!ec, "connect after stale session expires");
+    protocol::Sender recoveredSender(2);
+    hello.senderName = "recovered-protocol-host-test";
+    ASSERT_TRUE(writeBytes(recoveredSocket, recoveredSender.makeHello(hello)),
+                "send recovered HELLO");
+    ASSERT_TRUE(readRecord(recoveredSocket, record), "read recovered ACCEPT");
+    ASSERT_TRUE(record.type == protocol::RecordType::Accept, "recovered session accepted");
+    ASSERT_TRUE(writeBytes(recoveredSocket, recoveredSender.makeReady()),
+                "send recovered READY");
+
+    // Frame-by-count cannot safely accept a zero count because its pending
+    // point storage otherwise has no bound.
+    marker.frameId = 2;
+    marker.framePointCount = 0;
+    ASSERT_TRUE(writeBytes(recoveredSocket, recoveredSender.makeFrameMarker(marker)),
+                "send invalid zero-count frame marker");
+    ASSERT_TRUE(sink->waitForResets(4, 300ms),
+                "zero-count frame closes and resets session immediately");
+    ASSERT_TRUE(waitForAvailability(host, "available", 300ms),
+                "endpoint released after invalid frame marker");
+
+    // The real client sends heartbeats even when it has no content callback.
+    // Keeping this idle connection alive verifies both halves of the heartbeat.
+    protocol::DiscoveryAdvertisement heartbeatAdvertisement;
+    heartbeatAdvertisement.endpointId = endpoints[0].targetId;
+    heartbeatAdvertisement.displayName = endpoints[0].label;
+    heartbeatAdvertisement.address = endpoints[0].address;
+    heartbeatAdvertisement.tcpPort = endpoints[0].port;
+    heartbeatAdvertisement.supportedStreamModes =
+        protocol::streamModeMask(protocol::StreamMode::FrameByCount);
+    heartbeatAdvertisement.availability = protocol::EndpointAvailability::Available;
+    heartbeatAdvertisement.maxUserChannelCount = 2;
+    heartbeatAdvertisement.minPointRate = 1000;
+    heartbeatAdvertisement.maxPointRate = 60000;
+    heartbeatAdvertisement.maxFramePointCount = 300000;
+    heartbeatAdvertisement.featureFlags = protocol::FeatureScannerSync;
+    libera::liberaprotocol::LiberaProtocolControllerInfo heartbeatInfo(
+        heartbeatAdvertisement,
+        "127.0.0.1");
+    libera::liberaprotocol::LiberaProtocolController heartbeatClient(heartbeatInfo);
+    ASSERT_TRUE(static_cast<bool>(heartbeatClient.connect(heartbeatInfo)),
+                "real protocol client connects for heartbeat test");
+    heartbeatClient.startThread();
+    std::this_thread::sleep_for(1800ms);
+    ASSERT_TRUE(waitForAvailability(host, "busy", 200ms),
+                "heartbeats keep an otherwise idle session alive");
+    heartbeatClient.stopThread();
+    heartbeatClient.close();
+    ASSERT_TRUE(waitForAvailability(host, "available", 500ms),
+                "orderly client close releases heartbeat session");
+
     host.stop();
 
     vc::VirtualControllerHostConfig automaticAddressConfig;
@@ -327,6 +423,16 @@ int main() {
                     std::string::npos,
                 "automatic address explains discovery-source behavior");
     automaticAddressHost.stop();
+
+    vc::VirtualControllerHostConfig invalidPortConfig;
+    invalidPortConfig.options["listen_address"] = "127.0.0.1";
+    invalidPortConfig.options["tcp_port"] = "0";
+    invalidPortConfig.options["discovery"] = "false";
+    vc::LiberaProtocolVirtualControllerHost invalidPortHost(invalidPortConfig);
+    error.clear();
+    ASSERT_TRUE(!invalidPortHost.start(context, error), "zero TCP base port is rejected");
+    ASSERT_TRUE(error.find("between 1 and 65535") != std::string::npos,
+                "invalid port reports an actionable error");
 
     if (g_failures == 0) {
         std::printf("Libera Protocol virtual controller host tests passed.\n");

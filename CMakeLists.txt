@@ -81,6 +81,7 @@ if(NOT LIBERA_LINK_OPENIDN_LINK_MODE)
 endif()
 
 add_library(openidn-core STATIC ${OPENIDN_SOURCES})
+libera_apply_sanitizers(openidn-core)
 target_compile_definitions(openidn-core PUBLIC ODF_USE_TAXI_SOCK)
 if(LIBERA_LINK_OPENIDN_LINK_MODE)
   target_compile_definitions(openidn-core PUBLIC OPENIDN_LINK_MODE=1)
@@ -107,6 +108,7 @@ add_library(libera_link_core STATIC
     src/LiberaPaths.cpp
     src/AvbSettings.cpp
 )
+libera_apply_sanitizers(libera_link_core)
 target_include_directories(libera_link_core
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -136,17 +138,20 @@ function(libera_link_copy_libusb_runtime target_name)
 endfunction()
 
 add_executable(libera_link src/main.cpp)
+libera_apply_sanitizers(libera_link)
 set_target_properties(libera_link PROPERTIES OUTPUT_NAME "libera-link-cli")
 target_link_libraries(libera_link PRIVATE libera_link_core)
 libera_link_copy_libusb_runtime(libera_link)
 
 option(LIBERA_LINK_BUILD_HARDWARE_TESTS "Build hardware tests (requires Helios USB)" OFF)
 add_executable(test_avb_link tests/test_avb_link.cpp)
+libera_apply_sanitizers(test_avb_link)
 target_link_libraries(test_avb_link PRIVATE libera_link_core)
 libera_link_copy_libusb_runtime(test_avb_link)
 
 add_executable(test_avb_backend_state
     extern/libera-laser/tests/test_avb_backend_state.cpp)
+libera_apply_sanitizers(test_avb_backend_state)
 target_link_libraries(test_avb_backend_state PRIVATE libera-core)
 libera_link_copy_libusb_runtime(test_avb_backend_state)
 
@@ -157,27 +162,40 @@ endif()
 
 add_executable(test_point_stream_framer
     extern/libera-laser/tests/test_point_stream_framer.cpp)
+libera_apply_sanitizers(test_point_stream_framer)
 target_link_libraries(test_point_stream_framer PRIVATE libera-core)
 libera_link_copy_libusb_runtime(test_point_stream_framer)
 
 add_executable(test_etherdream_virtual_controller_host
     tests/test_etherdream_virtual_controller_host.cpp)
+libera_apply_sanitizers(test_etherdream_virtual_controller_host)
 target_link_libraries(test_etherdream_virtual_controller_host PRIVATE libera_link_core)
 libera_link_copy_libusb_runtime(test_etherdream_virtual_controller_host)
 
 add_executable(test_libera_protocol_virtual_controller_host
     tests/test_libera_protocol_virtual_controller_host.cpp)
+libera_apply_sanitizers(test_libera_protocol_virtual_controller_host)
 target_link_libraries(test_libera_protocol_virtual_controller_host PRIVATE libera_link_core)
 libera_link_copy_libusb_runtime(test_libera_protocol_virtual_controller_host)
 
+if(BUILD_TESTING)
+  add_test(NAME test_point_stream_framer COMMAND test_point_stream_framer)
+  add_test(NAME test_etherdream_virtual_controller_host
+      COMMAND test_etherdream_virtual_controller_host)
+  add_test(NAME test_libera_protocol_virtual_controller_host
+      COMMAND test_libera_protocol_virtual_controller_host)
+endif()
+
 add_executable(libera_protocol_sender_smoke
     tests/libera_protocol_sender_smoke.cpp)
+libera_apply_sanitizers(libera_protocol_sender_smoke)
 target_link_libraries(libera_protocol_sender_smoke PRIVATE libera-core)
 libera_link_copy_libusb_runtime(libera_protocol_sender_smoke)
 
 if(LIBERA_LINK_BUILD_HARDWARE_TESTS)
   add_executable(test_helios_usb_stream
       extern/libera-laser/tests/test_helios_usb_stream.cpp)
+  libera_apply_sanitizers(test_helios_usb_stream)
   target_link_libraries(test_helios_usb_stream PRIVATE libera-core)
   libera_link_copy_libusb_runtime(test_helios_usb_stream)
 endif()
@@ -261,6 +279,7 @@ if(LIBERA_LINK_BUILD_GUI)
         "${_libera_link_gui_imgui_source_dir}/backends/imgui_impl_glfw.cpp"
         "${_libera_link_gui_imgui_source_dir}/backends/imgui_impl_opengl3.cpp"
     )
+    libera_apply_sanitizers(libera_link_imgui)
     target_include_directories(libera_link_imgui PUBLIC
         "${_libera_link_gui_imgui_source_dir}"
         "${_libera_link_gui_imgui_source_dir}/backends"
@@ -294,6 +313,7 @@ if(LIBERA_LINK_BUILD_GUI)
         src/fonts/RobotoBold.cpp
         src/fonts/ForkAwesome.cpp
     )
+    libera_apply_sanitizers(libera_link_gui)
     if(UNIX AND NOT APPLE)
       set_target_properties(libera_link_gui PROPERTIES OUTPUT_NAME "libera-link")
     else()

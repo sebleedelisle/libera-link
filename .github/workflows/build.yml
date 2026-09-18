@@ -173,6 +173,7 @@ jobs:
             "$MACOS_FRAMEWORKS_DIR/libusb-1.0.0.dylib"
 
           codesign --deep --force --options runtime \
+            --entitlements "$GITHUB_WORKSPACE/cmake/LiberaLink.entitlements" \
             --sign "Developer ID Application: Seb Lee-Delisle (${{ secrets.APPLE_TEAM_ID }})" \
             "$MACOS_APP_BUNDLE"
 

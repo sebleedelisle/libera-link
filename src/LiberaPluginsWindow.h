@@ -4,6 +4,6 @@
 
 namespace libera::ui {
 
-void DrawPluginsWindow(bool* open);
+void DrawPluginsWindow(bool* open, bool focusRequested = false);
 
 } // namespace libera::ui

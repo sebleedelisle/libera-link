@@ -75,7 +75,9 @@ such as `v0.1.0-beta.123`.
 
 - macOS imports `APPLE_CERTIFICATE_P12` into a temporary keychain, signs the
   app bundle and DMG, submits both to Apple notarization, staples the result,
-  and validates with `spctl`.
+  and validates with `spctl`. App signing applies the
+  `com.apple.security.cs.disable-library-validation` entitlement so the
+  hardened runtime can load explicitly user-installed unsigned plugins.
 - Linux installs build dependencies from `apt`, creates a desktop file and icon,
   then uses `linuxdeploy-x86_64.AppImage`.
 - Windows downloads libusb `1.0.30`, stages the VS2022 x64 DLL/import library,

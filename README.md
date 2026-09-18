@@ -60,6 +60,20 @@ network controllers expose the same protocol that Libera Link would provide for
 them. Use the CLI or settings UI to enable it when you explicitly want to scan
 IDN controllers as physical outputs.
 
+## Controller Plugins
+
+Open **Plugins** to install a `.liberaplugin` package. Packages can contain the
+native driver, its private dependencies/resources, and README/license files.
+Install, update, and removal activate on restart. If a plugin implements a
+controller type that already has a built-in driver, choose the implementation
+explicitly under **Settings > Controller Discovery**; installing it never
+silently replaces the built-in driver.
+
+Plugins are unsigned native code and run with the same access as Libera Link.
+Publisher names are not verified, so install only packages you trust. The
+package format and ABI are documented in
+[Writing and packaging a Libera plugin](extern/libera-laser/docs/plugins.md).
+
 ## Virtual Controllers
 
 A virtual controller is the software-facing side of Libera Link. Its host

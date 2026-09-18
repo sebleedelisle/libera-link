@@ -29,6 +29,7 @@ struct LinkOptions {
     std::unordered_map<std::string, std::string> virtualControllerHostOptions;
     std::vector<VirtualControllerRoute> virtualControllerRoutes;
     std::set<std::string> disabledControllerTypes{"IDN"};
+    std::unordered_map<std::string, std::string> selectedControllerDrivers;
 };
 
 void printUsage(const char* exe);
@@ -100,6 +101,7 @@ struct DiscoveredControllerSnapshot {
     std::string label;
     std::string id;
     std::string type;
+    std::string driverId;
     std::uint32_t maxPointRate = 0;
     std::string usage;
     bool linkable = true;
@@ -134,6 +136,7 @@ public:
     bool scan(const LinkOptions& options);
     bool start(const LinkOptions& options);
     bool start(const LinkOptions& options, const std::set<std::string>& selectedControllerIds);
+    void invalidateDiscoveryCache();
     void requestStop();
     void stop();
 

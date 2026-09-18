@@ -147,6 +147,10 @@ void testLinkDiscoveryAndOutput(const std::shared_ptr<FakeAudioHost>& host) {
         }), "AVB banks are linkable controllers");
         check(host->openCount == 0, "discovery does not open the audio stream");
         check(runtime.start(options, {"avb-test::ch-0", "avb-test::ch-8"}), "AVB banks start through Link");
+        const auto started = runtime.snapshot();
+        check(std::any_of(started.recentLogs.begin(), started.recentLogs.end(), [](const auto& line) {
+            return line.find("from the latest scan") != std::string::npos;
+        }), "starting known controllers reuses the latest scan");
         check(state->targets.size() == 2, "virtual host receives both AVB targets");
         check(host->openCount == 1, "sibling banks share one audio stream");
         for (const auto& target : state->targets) {
