@@ -24,6 +24,7 @@ jobs:
             pr_artifact_paths: |
               build/Libera Link.app
               build/libera-link-cli
+              build/licenses
             package_path: libera-link-macos.dmg
           - os: ubuntu-latest
             preset: linux-release
@@ -31,6 +32,7 @@ jobs:
             pr_artifact_paths: |
               build/libera-link
               build/libera-link-cli
+              build/licenses
             package_path: libera-link-linux.AppImage
           - os: windows-2022
             preset: win-release
@@ -38,6 +40,7 @@ jobs:
             pr_artifact_paths: |
               build/Release/Libera Link.exe
               build/Release/libera-link-cli.exe
+              build/licenses
             package_path: |
               libera-link-windows-setup.exe
               libera-link-windows.zip
@@ -277,6 +280,9 @@ jobs:
             --desktop-file libera-link.desktop \
             --icon-file libera-link.png
 
+          mkdir -p AppDir/usr/share/doc/libera-link
+          cp -R build/licenses/. AppDir/usr/share/doc/libera-link/
+
           export OUTPUT=libera-link-linux.AppImage
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
 
@@ -287,6 +293,7 @@ jobs:
           mkdir -p staging/libera-link
           cp "build/Release/Libera Link.exe" staging/libera-link/
           cp build/Release/libera-link-cli.exe staging/libera-link/
+          cp -R build/licenses staging/libera-link/
           LIBUSB_DLL_DIR="build/libusb-msvc/libusb_bin/Windows/x64/Release/dll"
           if [ ! -f "${LIBUSB_DLL_DIR}/libusb-1.0.dll" ]; then
             LIBUSB_DLL_DIR="extern/libera-laser/libs/helios_dac/sdk/cpp/libusb_bin/Windows/x64/Release/dll"

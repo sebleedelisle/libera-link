@@ -3,6 +3,7 @@
 #include "LiberaPaths.hpp"
 #include "LiberaPluginsWindow.h"
 #include "LiberaAvbWindow.h"
+#include "LiberaThirdPartyNotices.hpp"
 #include "AvbSettings.hpp"
 #include "libera/System.hpp"
 #include "libera/gui/imgui/PluginManagementPanel.hpp"
@@ -193,6 +194,40 @@ void drawSectionTitle(const LiberaApp& app, const char* title, const char* subti
     if (subtitle && *subtitle) {
         ImGui::TextDisabled("%s", subtitle);
     }
+}
+
+void drawAboutWindow(const LiberaApp& app, bool* open, bool focusRequested) {
+    if (!*open) {
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(700.0f, 560.0f), ImGuiCond_FirstUseEver);
+    if (focusRequested) {
+        ImGui::SetNextWindowFocus();
+    }
+    if (ImGui::Begin("About Libera Link", open, ImGuiWindowFlags_NoCollapse)) {
+        drawSectionTitle(app, "Libera Link");
+        ImGui::Text("Version %s", APP_VERSION);
+        ImGui::TextUnformatted("By Seb Lee-Delisle / Seb.ly ltd");
+        ImGui::Spacing();
+        drawSectionTitle(app, "OpenIDN / IDN credits");
+        ImGui::TextWrapped(
+            "IDN support is based on OpenIDN, including work by DexLogic / Dirk Apitz "
+            "and the University of Bonn OpenIDN Laser DAC Framework team "
+            "(Matthias Frank, Leander Schickhaus and Christian Windeck), "
+            "with HeliosPRO adaptations by Gitle Mikkelsen.");
+        ImGui::TextLinkOpenURL("OpenIDN Helios adapter source", "https://github.com/Grix/helios_openidn");
+        ImGui::Spacing();
+        drawSectionTitle(app, "OpenIDN / IDN licences");
+        // Use the packaged text directly rather than keeping a separate UI copy
+        // of the legal notices that could drift out of date.
+        ImGui::BeginChild("ThirdPartyNotices", ImVec2(0.0f, 0.0f), true);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(libera_link::thirdPartyNotices);
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
+    }
+    ImGui::End();
 }
 
 float drawBrandLogo(const LiberaApp& app, ImVec2 pos, float areaWidth, bool rightAlign = false) {
@@ -537,6 +572,8 @@ int runGuiApplication() {
     bool focusPluginsWindow = false;
     bool showSettingsWindow = false;
     bool showAvbWindow = false;
+    bool showAboutWindow = false;
+    bool focusAboutWindow = false;
     std::set<std::string> enabledControllers = loadEnabledControllers();
     std::unordered_map<std::string, std::string> controllerHostRoutes = loadControllerHostRoutes();
     std::unordered_map<std::string, libera::gui::imgui::PluginPanelState>
@@ -1303,6 +1340,11 @@ int runGuiApplication() {
                 if (ImGui::Button("AVB Setup", ImVec2(140.0f, 0.0f))) {
                     showAvbWindow = true;
                 }
+                ImGui::SameLine();
+                if (ImGui::Button(ICON_FK_INFO_CIRCLE "  About", ImVec2(140.0f, 0.0f))) {
+                    showAboutWindow = true;
+                    focusAboutWindow = true;
+                }
 
                 ImGui::Separator();
                 ImGui::Spacing();
@@ -1552,6 +1594,8 @@ int runGuiApplication() {
 
         libera::ui::DrawPluginsWindow(&showPluginsWindow, focusPluginsWindow);
         focusPluginsWindow = false;
+        drawAboutWindow(app, &showAboutWindow, focusAboutWindow);
+        focusAboutWindow = false;
         app.endFrame();
     }
 

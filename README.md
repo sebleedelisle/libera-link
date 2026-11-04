@@ -152,6 +152,9 @@ Useful options:
 Run `./build/libera-link-cli --help` for the full list of options, virtual
 controller hosts, and available controller manager types.
 
+Run `./build/libera-link-cli --third-party-notices` to read the OpenIDN/IDN
+credits and licence notices without starting controller discovery or output.
+
 ## Safety
 
 Libera Link streams live laser output to real hardware. Use appropriate safety
@@ -164,6 +167,19 @@ enabling output.
 - [Writing a virtual controller host](docs/virtual-controller-hosts.md):
   pseudo-code for adding a new software-facing controller.
 - [CI and release](docs/ci-release.md): packaging, signing, and release setup.
+
+## OpenIDN Credits
+
+Libera Link's IDN support is based on OpenIDN, including work by DexLogic /
+Dirk Apitz and the University of Bonn OpenIDN Laser DAC Framework team
+(Matthias Frank, Leander Schickhaus and Christian Windeck), with HeliosPRO
+adaptations by Gitle Mikkelsen.
+
+The vendored subset comes from our [Helios OpenIDN fork](https://github.com/sebleedelisle/helios_openidn),
+based on the [upstream Helios adapter](https://github.com/Grix/helios_openidn),
+and includes Libera Link modifications. See
+[third-party notices](THIRD_PARTY_NOTICES.txt) for the full copyright and licence
+texts, also available in the app under **Settings > About**.
 
 ## Licensing
 

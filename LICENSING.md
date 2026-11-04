@@ -19,7 +19,14 @@ Important examples in this repository:
 - `extern/libera-laser/`:
   `extern/libera-laser/LICENSE`
 - `src/third_party/openidn/`:
-  `src/third_party/openidn/LICENSE.openidn.md`
+  the University of Bonn BSD-style licence in
+  [`src/third_party/openidn/LICENSE.openidn.md`](src/third_party/openidn/LICENSE.openidn.md),
+  plus DexLogic / Dirk Apitz MIT notices in the server and protocol source files.
+  Both full licence texts and copyright notices are reproduced in
+  [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).
+- IDN client code in `extern/libera-laser/libs/helios_dac/sdk/cpp/idn/`:
+  includes DexLogic / Dirk Apitz MIT-licensed code. Its MIT notices are also
+  reproduced in [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).
 - `src/fonts/RobotoMedium.cpp` and `src/fonts/RobotoBold.cpp`:
   generated compressed C arrays from Roboto TTF files. Roboto is an upstream
   Google font distributed under the Apache License 2.0.
@@ -33,3 +40,22 @@ notice, follow that more specific notice for that material.
 
 When redistributing generated font blobs, keep the corresponding upstream
 license and attribution information with the source or release artifact.
+
+## OpenIDN attribution and distribution
+
+Libera Link's IDN support is based on OpenIDN, including work by DexLogic /
+Dirk Apitz and the University of Bonn OpenIDN Laser DAC Framework team
+(Matthias Frank, Leander Schickhaus and Christian Windeck), with HeliosPRO
+adaptations by Gitle Mikkelsen. The vendored subset includes local modifications;
+its provenance is recorded in
+[`README.vendored.md`](src/third_party/openidn/README.vendored.md).
+
+Retain the original file notices and the Bonn licence when distributing source.
+When distributing binaries, include `THIRD_PARTY_NOTICES.txt` with the full Bonn
+and MIT notices. An acknowledgement alone does not replace these licence texts.
+
+CMake stages `LICENSE`, `LICENSING.md` and `THIRD_PARTY_NOTICES.txt` in
+`build/licenses/`. Release packaging includes these documents in the macOS app
+bundle, Linux AppImage, Windows portable ZIP and Windows installer. The GUI's
+**Settings > About** window and the CLI's `--third-party-notices` option also
+show the complete OpenIDN/IDN notice without needing an external file.

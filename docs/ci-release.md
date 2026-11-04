@@ -25,6 +25,11 @@ Non-PR builds package:
 Pull requests upload unsigned CI artifacts instead of packaged release files.
 No controller plugins are bundled in the release artifacts.
 
+Release packages include `LICENSE`, `LICENSING.md` and
+`THIRD_PARTY_NOTICES.txt`. The last file contains the full Bonn and DexLogic MIT
+notices for the OpenIDN/IDN code. CMake stages these documents in
+`build/licenses/`; PR artifacts include that directory too.
+
 ## Required GitHub Secrets
 
 Set these repository secrets before running signed non-PR builds:
@@ -73,6 +78,13 @@ such as `v0.1.0-beta.123`.
 
 ## Packaging Notes
 
+- Licence documents are included at `Contents/Resources/licenses/` inside the
+  macOS app, `usr/share/doc/libera-link/` inside the Linux AppImage, and
+  `licenses/` beside the Windows executables in both portable and installed
+  builds. The macOS documents are bundled before signing and notarization.
+  OpenIDN/IDN notices are also embedded in the GUI (**Settings > About**) and CLI
+  (`--third-party-notices`) so they remain readable if an executable is copied
+  separately.
 - macOS imports `APPLE_CERTIFICATE_P12` into a temporary keychain, signs the
   app bundle and DMG, submits both to Apple notarization, staples the result,
   and validates with `spctl`. App signing applies the

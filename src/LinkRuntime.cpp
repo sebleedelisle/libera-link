@@ -407,6 +407,7 @@ void printUsageImpl(const char* exe, std::ostream& out) {
         << "  --no-auto-latency              Disable automatic latency increase on underrun\n"
         << "  --disable-controller-type <id> Disable a Libera controller manager type\n"
         << "  --enable-controller-type <id>  Enable a default-disabled controller manager type\n"
+        << "  --third-party-notices          Show OpenIDN/IDN credits and licences, then exit\n"
         << "  --help                         Show this message\n";
 
     if (!availableVirtualControllerHosts.empty()) {

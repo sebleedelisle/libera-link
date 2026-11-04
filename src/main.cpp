@@ -1,10 +1,12 @@
 #include "LinkRuntime.hpp"
 #include "AvbSettings.hpp"
+#include "LiberaThirdPartyNotices.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <iostream>
+#include <string_view>
 #include <thread>
 
 namespace {
@@ -18,6 +20,12 @@ void onSignal(int) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // Reading credits must not start controller discovery or hardware output.
+    if (argc == 2 && std::string_view(argv[1]) == "--third-party-notices") {
+        std::cout << libera_link::thirdPartyNotices;
+        return 0;
+    }
+
     libera_link::LinkOptions options;
     const libera_link::ParseResult parseResult = libera_link::parseOptions(argc, argv, options);
     if (parseResult == libera_link::ParseResult::Help) {

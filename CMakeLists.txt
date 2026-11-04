@@ -23,6 +23,20 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(LIBERA_LINK_APP_VERSION "${PROJECT_VERSION}")
 set(LIBERA_LINK_APP_BUNDLE_NAME "Libera Link")
 
+# Stage the same documents for every release format and embed the OpenIDN/IDN
+# notice so the credits remain available when an executable is copied alone.
+set(LIBERA_LINK_LICENSE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSING.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt"
+)
+foreach(license_file IN LISTS LIBERA_LINK_LICENSE_FILES)
+  get_filename_component(license_name "${license_file}" NAME)
+  configure_file("${license_file}" "${CMAKE_CURRENT_BINARY_DIR}/licenses/${license_name}" COPYONLY)
+endforeach()
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt" LIBERA_LINK_THIRD_PARTY_NOTICES)
+configure_file(cmake/LiberaThirdPartyNotices.hpp.in generated/LiberaThirdPartyNotices.hpp @ONLY)
+
 if(APPLE OR WIN32)
   set(LIBERA_LINK_DEFAULT_BUNDLED_LIBUSB ON)
 else()
@@ -141,6 +155,7 @@ add_executable(libera_link src/main.cpp)
 libera_apply_sanitizers(libera_link)
 set_target_properties(libera_link PROPERTIES OUTPUT_NAME "libera-link-cli")
 target_link_libraries(libera_link PRIVATE libera_link_core)
+target_include_directories(libera_link PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 libera_link_copy_libusb_runtime(libera_link)
 
 option(LIBERA_LINK_BUILD_HARDWARE_TESTS "Build hardware tests (requires Helios USB)" OFF)
@@ -327,10 +342,17 @@ if(LIBERA_LINK_BUILD_GUI)
           MACOSX_PACKAGE_LOCATION "Resources"
       )
       target_sources(libera_link_gui PRIVATE "${LIBERA_LINK_MACOS_BUNDLE_ICON}")
+      set_source_files_properties(${LIBERA_LINK_LICENSE_FILES} PROPERTIES
+          MACOSX_PACKAGE_LOCATION "Resources/licenses"
+      )
+      target_sources(libera_link_gui PRIVATE ${LIBERA_LINK_LICENSE_FILES})
     elseif(WIN32)
       target_sources(libera_link_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/icons/libera-link.rc")
     endif()
-    target_include_directories(libera_link_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_include_directories(libera_link_gui PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    )
     target_compile_definitions(libera_link_gui PRIVATE APP_VERSION="${LIBERA_LINK_APP_VERSION}")
     target_link_libraries(libera_link_gui PRIVATE
         libera_link_core

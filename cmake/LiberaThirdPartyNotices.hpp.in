@@ -1,0 +1,8 @@
+#pragma once
+
+namespace libera_link {
+
+// Embed the packaged notice verbatim so GUI and standalone CLI users can read it.
+inline constexpr char thirdPartyNotices[] = R"LL_NOTICES(@LIBERA_LINK_THIRD_PARTY_NOTICES@)LL_NOTICES";
+
+} // namespace libera_link
