@@ -196,7 +196,7 @@ void drawSectionTitle(const LiberaApp& app, const char* title, const char* subti
     }
 }
 
-void drawAboutWindow(const LiberaApp& app, bool* open, bool focusRequested) {
+void drawCreditsWindow(const LiberaApp& app, bool* open, bool focusRequested) {
     if (!*open) {
         return;
     }
@@ -205,27 +205,41 @@ void drawAboutWindow(const LiberaApp& app, bool* open, bool focusRequested) {
     if (focusRequested) {
         ImGui::SetNextWindowFocus();
     }
-    if (ImGui::Begin("About Libera Link", open, ImGuiWindowFlags_NoCollapse)) {
+    if (ImGui::Begin("Libera Link Credits", open, ImGuiWindowFlags_NoCollapse)) {
         drawSectionTitle(app, "Libera Link");
-        ImGui::Text("Version %s", APP_VERSION);
-        ImGui::TextUnformatted("By Seb Lee-Delisle / Seb.ly ltd");
+        ImGui::TextUnformatted("Created by Seb Lee-Delisle");
+        ImGui::TextDisabled("Version %s", APP_VERSION);
         ImGui::Spacing();
-        drawSectionTitle(app, "OpenIDN / IDN credits");
+        drawSectionTitle(app, "OpenIDN / IDN");
         ImGui::TextWrapped(
-            "IDN support is based on OpenIDN, including work by DexLogic / Dirk Apitz "
-            "and the University of Bonn OpenIDN Laser DAC Framework team "
-            "(Matthias Frank, Leander Schickhaus and Christian Windeck), "
-            "with HeliosPRO adaptations by Gitle Mikkelsen.");
-        ImGui::TextLinkOpenURL("OpenIDN Helios adapter source", "https://github.com/Grix/helios_openidn");
-        ImGui::Spacing();
-        drawSectionTitle(app, "OpenIDN / IDN licences");
-        // Use the packaged text directly rather than keeping a separate UI copy
-        // of the legal notices that could drift out of date.
-        ImGui::BeginChild("ThirdPartyNotices", ImVec2(0.0f, 0.0f), true);
+            "Libera Link's IDN support is based on OpenIDN, including work by:");
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextUnformatted(libera_link::thirdPartyNotices);
+        ImGui::BulletText("DexLogic / Dirk Apitz - IDN server and protocol code.");
+        ImGui::BulletText(
+            "University of Bonn - OpenIDN Laser DAC Framework, by Matthias Frank, "
+            "Leander Schickhaus and Christian Windeck.");
+        ImGui::BulletText("Gitle Mikkelsen - HeliosPRO adaptations.");
         ImGui::PopTextWrapPos();
-        ImGui::EndChild();
+        ImGui::Spacing();
+        drawSectionTitle(app, "Libraries and assets");
+        ImGui::TextWrapped(
+            "Built with Libera Laser, Dear ImGui, GLFW, ASIO, libusb, nlohmann/json "
+            "and miniz. Fonts and icons from Roboto and Fork Awesome.");
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Project sources")) {
+            ImGui::TextLinkOpenURL("OpenIDN Helios adapter", "https://github.com/Grix/helios_openidn");
+            ImGui::TextLinkOpenURL("Libera Link OpenIDN fork", "https://github.com/sebleedelisle/helios_openidn");
+            ImGui::TextLinkOpenURL("Libera Laser", "https://github.com/sebleedelisle/libera-laser");
+        }
+        if (ImGui::CollapsingHeader("OpenIDN / IDN licence notices")) {
+            // Keep contributor credits easy to scan, with the full packaged
+            // legal text available in a separate scrollable section.
+            ImGui::BeginChild("ThirdPartyNotices", ImVec2(0.0f, 240.0f), true);
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(libera_link::thirdPartyNotices);
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
+        }
     }
     ImGui::End();
 }
@@ -572,8 +586,8 @@ int runGuiApplication() {
     bool focusPluginsWindow = false;
     bool showSettingsWindow = false;
     bool showAvbWindow = false;
-    bool showAboutWindow = false;
-    bool focusAboutWindow = false;
+    bool showCreditsWindow = false;
+    bool focusCreditsWindow = false;
     std::set<std::string> enabledControllers = loadEnabledControllers();
     std::unordered_map<std::string, std::string> controllerHostRoutes = loadControllerHostRoutes();
     std::unordered_map<std::string, libera::gui::imgui::PluginPanelState>
@@ -1341,9 +1355,9 @@ int runGuiApplication() {
                     showAvbWindow = true;
                 }
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FK_INFO_CIRCLE "  About", ImVec2(140.0f, 0.0f))) {
-                    showAboutWindow = true;
-                    focusAboutWindow = true;
+                if (ImGui::Button(ICON_FK_INFO_CIRCLE "  Credits", ImVec2(140.0f, 0.0f))) {
+                    showCreditsWindow = true;
+                    focusCreditsWindow = true;
                 }
 
                 ImGui::Separator();
@@ -1594,8 +1608,8 @@ int runGuiApplication() {
 
         libera::ui::DrawPluginsWindow(&showPluginsWindow, focusPluginsWindow);
         focusPluginsWindow = false;
-        drawAboutWindow(app, &showAboutWindow, focusAboutWindow);
-        focusAboutWindow = false;
+        drawCreditsWindow(app, &showCreditsWindow, focusCreditsWindow);
+        focusCreditsWindow = false;
         app.endFrame();
     }
 

@@ -82,7 +82,7 @@ such as `v0.1.0-beta.123`.
   macOS app, `usr/share/doc/libera-link/` inside the Linux AppImage, and
   `licenses/` beside the Windows executables in both portable and installed
   builds. The macOS documents are bundled before signing and notarization.
-  OpenIDN/IDN notices are also embedded in the GUI (**Settings > About**) and CLI
+  OpenIDN/IDN notices are also embedded in the GUI (**Settings > Credits**) and CLI
   (`--third-party-notices`) so they remain readable if an executable is copied
   separately.
 - macOS imports `APPLE_CERTIFICATE_P12` into a temporary keychain, signs the

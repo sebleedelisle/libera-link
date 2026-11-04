@@ -179,7 +179,7 @@ The vendored subset comes from our [Helios OpenIDN fork](https://github.com/sebl
 based on the [upstream Helios adapter](https://github.com/Grix/helios_openidn),
 and includes Libera Link modifications. See
 [third-party notices](THIRD_PARTY_NOTICES.txt) for the full copyright and licence
-texts, also available in the app under **Settings > About**.
+texts, also available in the app under **Settings > Credits**.
 
 ## Licensing
 

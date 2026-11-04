@@ -57,5 +57,5 @@ and MIT notices. An acknowledgement alone does not replace these licence texts.
 CMake stages `LICENSE`, `LICENSING.md` and `THIRD_PARTY_NOTICES.txt` in
 `build/licenses/`. Release packaging includes these documents in the macOS app
 bundle, Linux AppImage, Windows portable ZIP and Windows installer. The GUI's
-**Settings > About** window and the CLI's `--third-party-notices` option also
+**Settings > Credits** window and the CLI's `--third-party-notices` option also
 show the complete OpenIDN/IDN notice without needing an external file.
